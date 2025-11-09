@@ -101,7 +101,7 @@ summary(data)
 table(data$quality) ## We can observe that we have a few, discrete levels (3:9).
                     ## , thus we should change it to a factor (we have a classification task NOT a regression).
 
-data$quality <- as.factor(data$quality)
+data$quality <- as.numeric(data$quality)
 
 #=======================#
 ## Check for data variability and skewed data.
@@ -109,6 +109,34 @@ data$quality <- as.factor(data$quality)
 ## Possible bimodial distribution (red vs white wine). Will work well with trees.
 hist(data$chlorides)
 data$chlorides <- log(data$chlorides)
+
+## Plot the data distribution.
+df_long <- data %>%
+  select(-quality) %>%
+  pivot_longer(cols = everything(), names_to = "feature", values_to = "value")
+
+# Plot histograms with faceting
+plot <- ggplot(df_long, aes(x = value)) +
+  geom_histogram(fill = blue, color = "white", bins = 30) +
+  facet_wrap(~feature, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold", size = 10)) +
+  labs(title = "",
+       x = "Value",
+       y = "Count")
+
+Path <- file.path(Charts_Directory, "02_Data_Distribution.png")
+ggsave(
+  filename = Path,
+  plot = plot,
+  width = 3750,
+  height = 1833,
+  units = "px",
+  dpi = 300,
+  limitsize = FALSE
+)
+
+
 
 ## Do not log-transform residual_sugar as it will contribute to even more unbalancing.
 hist(data$residual_sugar)
@@ -202,6 +230,8 @@ nrow(Test)
 
 set.seed(123)
 
+tryCatch({
+
 ## Generally, we rely on RMSE is our loss function. It is unreliable
 ## if the dependent variable is very unbalanced, but we are lucky:
 ## the dataset is very balanced and that the data is ordinal!
@@ -219,194 +249,133 @@ test_y <- Test$quality
 #=======================#
 ## Lasso.
 #=======================#
+# Change family to "gaussian" for regression
 lasso_model <- glmnet(train_x, train_y, 
                       alpha = 1, 
-                      family = "multinomial")
+                      family = "gaussian")
 lambdas <- lasso_model$lambda
 
-val_preds <- predict(lasso_model, newx = val_x, 
-                     s = lambdas, type = "class")
+# Predict gives numeric values now, not classes
+val_preds <- predict(lasso_model, newx = val_x, s = lambdas)
 
-## Go through each column of prediction and compute the accuracy in the validation set.
-accuracies <- rep(NA, length(lambdas))
+## Compute RMSE for each lambda in the validation set
+rmses <- rep(NA, length(lambdas))
 for (i in 1:length(lambdas)) {
-  accuracies[i] <- mean(val_preds[, i] == val_y)
+  rmses[i] <- sqrt(mean((val_preds[, i] - val_y)^2))
 }
 
-best_acc <- max(accuracies)
-best_lambda <- lambdas[which.max(accuracies)]
+# Find lambda that MINIMIZES RMSE
+best_lasso_rmse <- min(rmses)
+best_lambda <- lambdas[which.min(rmses)]
 
 #=======================#
 ## Ridge.
 #=======================#
 ridge_model <- glmnet(train_x, train_y, 
                       alpha = 0, 
-                      family = "multinomial")
+                      family = "gaussian")
 
 lambdas_r <- ridge_model$lambda
-val_preds_r <- predict(ridge_model, newx = val_x, 
-                       s = lambdas_r, type = "class")
+val_preds_r <- predict(ridge_model, newx = val_x, s = lambdas_r)
 
-accuracies_r <- rep(NA, length(lambdas_r))
+rmses_r <- rep(NA, length(lambdas_r))
 for (i in 1:length(lambdas_r)) {
-  accuracies_r[i] <- mean(val_preds_r[, i] == val_y)
+  rmses_r[i] <- sqrt(mean((val_preds_r[, i] - val_y)^2))
 }
 
-best_acc_r <- max(accuracies_r)
-best_lambda_r <- lambdas_r[which.max(accuracies_r)]
-
-
-
+best_ridge_rmse <- min(rmses_r)
+best_lambda_r <- lambdas_r[which.min(rmses_r)]
 
 #=======================#
 ## Evaluate it on the test set.
 #=======================#
-final_lasso_preds <- predict(lasso_model, newx = test_x, 
-                             s = best_lambda, type = "class")
-final_lasso_acc <- mean(final_lasso_preds == test_y)
+final_lasso_preds <- predict(lasso_model, newx = test_x, s = best_lambda)
+final_ridge_preds <- predict(ridge_model, newx = test_x, s = best_lambda_r)
 
-final_ridge_preds <- predict(ridge_model, newx = test_x, 
-                             s = best_lambda_r, type = "class")
-final_ridge_acc <- mean(final_ridge_preds == test_y)
+lasso_test_rmse <- sqrt(mean((test_y - final_lasso_preds)^2))
+ridge_test_rmse <- sqrt(mean((test_y - final_ridge_preds)^2))
 
-print("--- FINAL MODEL ASSESSMENT ---")
-print(paste("Final Lasso Accuracy (Test Set):", final_lasso_acc))
-print(paste("Final Ridge Accuracy (Test Set):", final_ridge_acc))
+lasso_acc <- mean(round(final_lasso_preds) == test_y)
+ridge_acc <- mean(round(final_ridge_preds) == test_y)
 
-#=======================#
-## Compute the RMSE loss.
-#=======================#
-true_quality_num <- as.numeric(as.character(test_y))
-lasso_preds_num  <- as.numeric(as.character(final_lasso_preds))
-ridge_preds_num  <- as.numeric(as.character(final_ridge_preds))
-
-lasso_rmse <- sqrt(mean((true_quality_num - lasso_preds_num)^2))
-ridge_rmse <- sqrt(mean((true_quality_num - ridge_preds_num)^2))
-
-print(paste("Final Lasso Accuracy (Test Set):", final_lasso_acc))
-print(paste("Final Lasso RMSE (Test Set):", lasso_rmse))
-print("---")
-print(paste("Final Ridge Accuracy (Test Set):", final_ridge_acc))
-print(paste("Final Ridge RMSE (Test Set):", ridge_rmse))
-
-## RMSE tells us, on average, how far off the prediction was. 3.06 implies that
-## the model is off by 3.06 quality levels.
+print("--- FINAL MODEL ASSESSMENT (Regression Approach) ---")
+print(paste("Final Lasso RMSE (Test Set):", round(lasso_test_rmse, 4)))
+print(paste("Final Ridge RMSE (Test Set):", round(ridge_test_rmse, 4)))
+print("--- (For comparison only) ---")
+print(paste("Final Lasso Accuracy (Test Set):", round(lasso_acc, 4)))
+print(paste("Final Ridge Accuracy (Test Set):", round(ridge_acc, 4)))
 
 #=======================#
-## Visualisation.
+## Visualisation Updates.
 #=======================#
 
 tryCatch({
   
-lasso_acc_df <- data.frame(
-  lambda = lambdas,
-  accuracy = accuracies
-)
-
-ridge_acc_df <- data.frame(
-  lambda = lambdas_r,
-  accuracy = accuracies_r
-)
-
-### Plotting.
-plot_lasso_acc <- ggplot(lasso_acc_df, aes(x = lambda, y = accuracy)) +
-  geom_line(linewidth = 1, color = "#7B68EE") +
+  lasso_rmse_df <- data.frame(lambda = lambdas, rmse = rmses)
+  ridge_rmse_df <- data.frame(lambda = lambdas_r, rmse = rmses_r)
   
-  geom_vline(xintercept = best_lambda, linetype = "dashed", 
-             color = "black", linewidth = 1) +
+  plot_lasso_rmse <- ggplot(lasso_rmse_df, aes(x = lambda, y = rmse)) +
+    geom_line(linewidth = 1, color = "#7B68EE") +
+    geom_vline(xintercept = best_lambda, linetype = "dashed", color = "black", linewidth = 1) +
+    scale_x_reverse() +
+    labs(title = "Lasso: Validation RMSE vs. Lambda", x = "Lambda", y = "Validation RMSE") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5))
   
-  scale_x_reverse() +
-  labs(
-    title = "Lasso: Validation Accuracy vs. Lambda",
-    x = "Lambda",
-    y = "Validation Accuracy"
-  ) +
-  theme_light() +
-  theme(plot.title = element_text(hjust = 0.5))
-
-plot_ridge_acc <- ggplot(ridge_acc_df, aes(x = lambda, y = accuracy)) +
-  geom_line(linewidth = 1, color = "#CD5C5C") +
-  geom_vline(xintercept = best_lambda_r, linetype = "dashed", 
-             color = "black", linewidth = 1) +
-  scale_x_reverse() +
-  labs(
-    title = "Ridge: Validation Accuracy vs. Lambda",
-    x = "Lambda",
-    y = "Validation Accuracy"
-  ) +
-  theme_light() +
-  theme(plot.title = element_text(hjust = 0.5))
-
-plot_ridge_acc | plot_lasso_acc
-
+  plot_ridge_rmse <- ggplot(ridge_rmse_df, aes(x = lambda, y = rmse)) +
+    geom_line(linewidth = 1, color = "#CD5C5C") +
+    geom_vline(xintercept = best_lambda_r, linetype = "dashed", color = "black", linewidth = 1) +
+    scale_x_reverse() +
+    labs(title = "Ridge: Validation RMSE vs. Lambda", x = "Lambda", y = "Validation RMSE") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5))
+  
 }, silent = TRUE)
 
-## Now do the coefficients vs the lambda values.
-
 tryCatch({
-  
-  lasso_coefs <- coef(lasso_model)$"5"
-  lasso_df <- as.data.frame(as.matrix(t(lasso_coefs)))
+  lasso_coefs_matrix <- as.matrix(t(coef(lasso_model)))
+  lasso_df <- as.data.frame(lasso_coefs_matrix)
   lasso_df$lambda <- lasso_model$lambda
-  lasso_plot_df <- melt(lasso_df, id.vars = "lambda", 
-                        variable.name = "Coefficient", 
-                        value.name = "Value")
-  lasso_plot_df_filtered <- filter(lasso_plot_df, Coefficient != "V1")
   
-  lasso_plot <- ggplot(lasso_plot_df_filtered, aes(x = lambda, y = Value, color = Coefficient)) +
+  lasso_plot_df <- melt(lasso_df, id.vars = "lambda", variable.name = "Coefficient", value.name = "Value")
+  lasso_plot_df <- filter(lasso_plot_df, Coefficient != "(Intercept)")
+  
+  lasso_plot <- ggplot(lasso_plot_df, aes(x = lambda, y = Value, color = Coefficient)) +
     geom_line(linewidth = 1) +
-    geom_vline(xintercept = best_lambda_r, linetype = "dashed", 
-               color = "black", linewidth = 1) +
+    geom_vline(xintercept = best_lambda, linetype = "dashed", color = "black", linewidth = 1) +
     scale_x_reverse() +
-    labs(
-      title = "Lasso Coefficient (Quality = 5)",
-      subtitle = "Dashed line is the optimal lambda",
-      x = "Lambda",
-      y = "Coefficient"
-    ) +
+    labs(title = "Lasso Coefficients", subtitle = "Optimal lambda: 0.00024", x = "Lambda", y = "Coefficient") +
     theme_light() +
-    theme(plot.title = element_text(hjust = 0.5),
-          plot.subtitle = element_text(hjust = 0.5),
-          legend.position = "none",
-          legend.title = element_blank()
-    )
+    theme(plot.title = element_text(hjust = 0.5), 
+          plot.subtitle = element_text(hjust = 0.5), 
+          legend.position = "none")
   
-## Now for ridge.
-  
-  ridge_coefs <- coef(ridge_model)$"5"
-    ridge_df <- as.data.frame(as.matrix(t(ridge_coefs)))
+  # Ridge Coefs
+  ridge_coefs_matrix <- as.matrix(t(coef(ridge_model))) # No $"5" needed
+  ridge_df <- as.data.frame(ridge_coefs_matrix)
   ridge_df$lambda <- ridge_model$lambda
   
-  ridge_plot_df <- melt(ridge_df, id.vars = "lambda", 
-                        variable.name = "Coefficient", 
-                        value.name = "Value")
+  ridge_plot_df <- melt(ridge_df, id.vars = "lambda", variable.name = "Coefficient", value.name = "Value")
+  ridge_plot_df <- filter(ridge_plot_df, Coefficient != "(Intercept)")
   
-  ridge_plot_df_filtered <- filter(ridge_plot_df, Coefficient != "V1")
-  
-  ridge_plot <- ggplot(ridge_plot_df_filtered, aes(x = lambda, y = Value, color = Coefficient)) +
+  ridge_plot <- ggplot(ridge_plot_df, aes(x = lambda, y = Value, color = Coefficient)) +
     geom_line(linewidth = 1) +
-        geom_vline(xintercept = best_lambda_r, linetype = "dashed", 
-               color = "black", linewidth = 1) +
+    geom_vline(xintercept = best_lambda_r, linetype = "dashed", color = "black", linewidth = 1) +
     scale_x_reverse() +
     coord_cartesian(xlim = c(2.5, 0)) +
-    labs(
-      title = "Ridge Coefficient (Quality = 5)",
-      subtitle = "Dashed line is the optimal lambda",
-      x = "Lambda",
-      y = "Coefficient"
-    ) +
+    labs(title = "Ridge Coefficients", subtitle = "Optimal lambda: 0.0221", x = "Lambda", y = "Coefficient") +
     theme_light() +
-    theme(plot.title = element_text(hjust = 0.5),
-          plot.subtitle = element_text(hjust = 0.5),
-          legend.position = "bottom",
+    theme(plot.title = element_text(hjust = 0.5), 
+          plot.subtitle = element_text(hjust = 0.5), 
+          legend.position = "bottom", 
           legend.title = element_blank(),
           legend.text = element_text(size = 10))
   
-  ## Now combine them.
+  # Save or display
   
-plot <- ridge_plot | lasso_plot
-Path <- file.path(Charts_Directory, "02_Linear_Shrinkage_Coefficients.png")
-
+  plot <- ridge_plot | lasso_plot
+  Path <- file.path(Charts_Directory, "03_Linear_Shrinkage_Coefficients.png")
+  
   ggsave(
     filename = Path,
     plot = plot,
@@ -415,13 +384,21 @@ Path <- file.path(Charts_Directory, "02_Linear_Shrinkage_Coefficients.png")
     units = "px",
     dpi = 300,
     limitsize = FALSE
-  )
+    
+  )  
+  
+}, silent = TRUE)
+
+## End of whole tryCatch() statement.
+
 }, silent = TRUE)
 
 #==== 03b - Decision Tree's - Random Forest ===================================#
 
 set.seed(123)
 
+tryCatch({
+  
 #=======================#
 ## Parameters.
 #=======================#
@@ -432,6 +409,7 @@ mtry_values <- c(2, 3, 4, 5, 6)
 ## Main Model.
 #=======================#
 
+Train$quality <- as.numeric(as.character(Train$quality))
 rf_results <- data.frame(mtry = mtry_values, RMSE = NA, Accuracy = NA)
 true_val_num <- as.numeric(as.character(Validation$quality))
 
@@ -467,12 +445,13 @@ final_rf_model <- randomForest(
   quality ~ ., 
   data = Train, 
   mtry = best_mtry,
-  ntree = 500
+  ntree = 500,
+  importance = TRUE
 )
 
 rf_test_preds <- predict(final_rf_model, newdata = Test)
 
-rf_final_acc <- mean(rf_test_preds == Test$quality)
+rf_final_acc <- mean(round(rf_test_preds) == as.numeric(Test$quality))
 true_test_num <- as.numeric(as.character(Test$quality))
 rf_preds_num  <- as.numeric(as.character(rf_test_preds))
 rf_final_rmse <- sqrt(mean((true_test_num - rf_preds_num)^2))
@@ -498,18 +477,20 @@ final_rf_model <- randomForest(
 importance_data <- as.data.frame(importance(final_rf_model))
 importance_data$Variable <- rownames(importance_data)
 
-## Plot.
+## Plot the feature importance.
 
-plot <- ggplot(importance_data, aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
-  geom_bar(stat = "identity", fill = hblue) +
+plot <- ggplot(importance_data, aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = blue) +
   coord_flip() +
-  labs(title = "Feature Importance",
+  labs(title = "Feature Importance (Random Forest Regression)",
+       subtitle = "",
        x = "Features",
-       y = "Importance (Mean Decrease in Accuracy)") +
+       y = "% Increase in MSE") +
   theme_light() +
-  theme(plot.title = element_text(hjust = 0.5))
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
 
-Path <- file.path(Charts_Directory, "03_Random_Forest_FeatureImportance.png")
+Path <- file.path(Charts_Directory, "04_Random_Forest_FeatureImportance.png")
 
 ggsave(
   filename = Path,
@@ -519,12 +500,39 @@ ggsave(
   units = "px",
   dpi = 300,
   limitsize = FALSE
+  
+  ## Plot the feature importance.
+  
+  plot_data <- data.frame(
+    Actual = true_test_num,
+    Predicted = rf_preds_num
+  )
+  
+  ggplot(plot_data, aes(x = Actual, y = Predicted)) +
+    geom_point(alpha = 0.5) +  # Add points with some transparency
+    geom_abline(color = "red", linetype = "dashed", linewidth = 1) + # Add a y=x line
+    labs(
+      title = "Actual vs. Predicted Values (Test Set)",
+      x = "True Quality",
+      y = "Predicted Quality"
+    ) +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5))  
+  
+  
+  
 )
+}, silent = TRUE)
+
+## End of the tryCatch() statement.
+
 }, silent = TRUE)
 
 #==== 03c - Decision Tree's - Gradient Boosting ===============================#
 
 set.seed(123)
+
+tryCatch({
 
 #=======================#
 ## Parameters.
@@ -536,11 +544,12 @@ Test_Num <- Test
 
 New_Train_Num$quality  <- as.numeric(as.character(Train$quality))
 Validation_Num$quality <- as.numeric(as.character(Validation$quality))
-Test_Num$quality       <- as.numeric(as.character(Test$quality))
+Test_Num$quality <- as.numeric(as.character(Test$quality))
 
 ## Hyperparameters to tune.
 Train_Num <- rbind(New_Train_Num, Validation_Num)
-depth_values <- c(2, 3, 4, 5, 6)
+depth_values <- c(2, 4, 6, 8, 10)
+shrinkage <- 0.001
 
 #=======================#
 ## Main Model.
@@ -556,14 +565,14 @@ for (i in 1:length(depth_values)) {
     distribution = "gaussian",  
     n.trees = 5000,
     interaction.depth = depth_values[i],
-    shrinkage = 0.01,
+    shrinkage = shrinkage,
     cv.folds = 5,               # Use 5-fold CV (like the slides)
     n.minobsinnode = 10,        # Fix the argument spelling
     n.cores = NULL              # Use all available cores
   )
   
   best_M <- gbm.perf(gbm_model, plot.it = FALSE, method = "cv")
-    best_rmse <- gbm_model$cv.error[best_M]
+    best_rmse <- sqrt(gbm_model$cv.error[best_M])
   
   gbm_results$cv_RMSE[i] <- best_rmse
   gbm_results$best_trees[i] <- best_M
@@ -590,7 +599,7 @@ final_gbm_model <- gbm(
   distribution = "gaussian",
   n.trees = best_trees,
   interaction.depth = best_depth,
-  shrinkage = 0.01,
+  shrinkage = shrinkage,
   n.minobsinnode = 10,
   verbose = FALSE,
   n.cores = NULL
@@ -613,6 +622,8 @@ print("--- FINAL GRADIENT BOOSTING ASSESSMENT ---")
 print(paste("Final GBM Accuracy (Test Set):", gbm_final_acc))
 print(paste("Final GBM RMSE (Test Set):", gbm_final_rmse))
 
+}, silent = TRUE)
+
 #==============================================================================#
 #==== 04 - Model Comparison ===================================================#
 #==============================================================================#
@@ -623,13 +634,13 @@ print(paste("Final GBM RMSE (Test Set):", gbm_final_rmse))
 results_df <- data.frame(
   Model = c("Lasso", "Ridge", "Random Forest", "Gradient Boosting"),
   
-  Accuracy = c(final_lasso_acc, 
-               final_ridge_acc, 
+  Accuracy = c(lasso_acc, 
+               ridge_acc, 
                rf_final_acc, 
                gbm_final_acc),
   
-  RMSE = c(lasso_rmse, 
-           ridge_rmse, 
+  RMSE = c(lasso_test_rmse, 
+           ridge_test_rmse, 
            rf_final_rmse, 
            gbm_final_rmse)
 )
@@ -652,7 +663,7 @@ plot_acc <- ggplot(results_df, aes(x = reorder(Model, Accuracy), y = Accuracy)) 
   theme(legend.position = "none",
         plot.title = element_text(hjust = 0.5))
 
-Path <- file.path(Charts_Directory, "04_Accuracy_Comparison.png")
+Path <- file.path(Charts_Directory, "05_Accuracy_Comparison.png")
 ggsave(
   filename = Path,
   plot = plot_acc,
@@ -677,7 +688,7 @@ plot_rmse <- ggplot(results_df, aes(x = reorder(Model, -RMSE), y = RMSE)) +
   theme(legend.position = "none",
         plot.title = element_text(hjust = 0.5))
 
-Path <- file.path(Charts_Directory, "05_RMSE_Comparison.png")
+Path <- file.path(Charts_Directory, "06_RMSE_Comparison.png")
 ggsave(
   filename = Path,
   plot = plot_rmse,
@@ -691,7 +702,7 @@ ggsave(
 ## Combination.
 #=====================#
 
-# Path <- file.path(Charts_Directory, "04_Accuracy_Comparison.png")
+# Path <- file.path(Charts_Directory, "07_Accuracy_Comparison.png")
 # 
 # ggsave(
 #   filename = Path,
@@ -703,8 +714,6 @@ ggsave(
 #   limitsize = FALSE
 # )
 
-plot_acc | plot_rmse
-
 #==============================================================================#
 #==== 05 - Appendix ===========================================================#
 #==============================================================================#
@@ -715,33 +724,43 @@ set.seed(123)
 
 if(Enable_Catboost){
   
+tryCatch({
+  
 #=======================#
 ## Parameters.
 #=======================#
+
+  New_Train_Num <- Train
+  Validation_Num <- Validation
+  Test_Num <- Test 
   
-  data_num <- data
-  data_num$quality <- as.numeric(as.character(data$quality))
-  train_index_75 <- sample(1:nrow(data_num), size = 0.75 * nrow(data_num))
-  Train_75_Num <- data_num[train_index_75, ]
-  Test_25_Num  <- data_num[-train_index_75, ]
-  
-  val_index <- sample(1:nrow(Train_75_Num), size = (2.5/7.5) * nrow(Train_75_Num))
-  New_Train_Num  <- Train_75_Num[-val_index, ]
-  Validation_Num <- Train_75_Num[val_index, ]
+  New_Train_Num$quality  <- as.numeric(as.character(New_Train_Num$quality))
+  Validation_Num$quality <- as.numeric(as.character(Validation_Num$quality))
+  Test_Num$quality       <- as.numeric(as.character(Test_Num$quality))
   
   train_x <- New_Train_Num[, -which(names(New_Train_Num) == "quality")]
   train_y <- New_Train_Num$quality
-  val_x <- Validation_Num[, -which(names(Validation_Num) == "quality")]
-  val_y <- Validation_Num$quality
+  val_x   <- Validation_Num[, -which(names(Validation_Num) == "quality")]
+  val_y   <- Validation_Num$quality
   
   train_pool <- catboost.load_pool(data = train_x, label = train_y)
   val_pool   <- catboost.load_pool(data = val_x, label = val_y)
   
+  Final_Train_Val_Num <- rbind(New_Train_Num, Validation_Num) 
+  
+  final_train_x <- Final_Train_Val_Num[, -which(names(Final_Train_Val_Num) == "quality")]
+  final_train_y <- Final_Train_Val_Num$quality
+  final_train_pool <- catboost.load_pool(data = final_train_x, label = final_train_y)
+  
+  test_x <- Test_Num[, -which(names(Test_Num) == "quality")]
+  test_y <- Test_Num$quality
+  test_pool <- catboost.load_pool(data = test_x, label = test_y)
+  
   param_grid <- expand.grid(
     learning_rate = c(0.03, 0.1),
-    depth = c(4, 6),
+    depth = c(10, 12, 14, 16),
     l2_leaf_reg = c(1, 5) # This is the L2 regularization
-  )
+    )
   
   tuning_results <- param_grid
   tuning_results$best_iteration <- NA
@@ -823,9 +842,6 @@ if(Enable_Catboost){
     params = final_params
   )
   
-  # --- 4. Evaluate Final Model on the Hold-Out Test Set ---
-  
-  # Prepare the test pool (the 25% of data the model has never seen)
   test_x <- Test_25_Num[, -which(names(Test_25_Num) == "quality")]
   test_y <- Test_25_Num$quality
   test_pool <- catboost.load_pool(data = test_x, label = test_y)
@@ -876,7 +892,7 @@ if(Enable_Catboost){
     theme_light() +
     theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
   
-  Path <- file.path(Charts_Directory, "04b_Accuracy_Comparison_with_CatBoost.png")
+  Path <- file.path(Charts_Directory, "05b_Accuracy_Comparison_with_CatBoost.png")
   ggsave(
     filename = Path,
     plot = plot_acc,
@@ -894,7 +910,7 @@ if(Enable_Catboost){
     theme_light() +
     theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
   
-  Path <- file.path(Charts_Directory, "05b_RMSE_Comparison_with_CatBoost.png")
+  Path <- file.path(Charts_Directory, "06_RMSE_Comparison_with_CatBoost.png")
   ggsave(
     filename = Path,
     plot = plot_rmse,
@@ -907,6 +923,8 @@ if(Enable_Catboost){
   
   # Combine the plots
   plot_acc | plot_rmse
+  
+  }, silent = TRUE)
 
 }
 

@@ -1,0 +1,311 @@
+%==== KNITR ===================================================================%
+
+
+
+%==== START ===================================================================%
+
+\documentclass{report}\usepackage[]{graphicx}\usepackage[]{xcolor}
+% maxwidth is the original width if it is less than linewidth
+% otherwise use linewidth (to make sure the graphics do not exceed the margin)
+\makeatletter
+\def\maxwidth{ %
+  \ifdim\Gin@nat@width>\linewidth
+    \linewidth
+  \else
+    \Gin@nat@width
+  \fi
+}
+\makeatother
+
+\definecolor{fgcolor}{rgb}{0.345, 0.345, 0.345}
+\newcommand{\hlnum}[1]{\textcolor[rgb]{0.686,0.059,0.569}{#1}}%
+\newcommand{\hlstr}[1]{\textcolor[rgb]{0.192,0.494,0.8}{#1}}%
+\newcommand{\hlcom}[1]{\textcolor[rgb]{0.678,0.584,0.686}{\textit{#1}}}%
+\newcommand{\hlopt}[1]{\textcolor[rgb]{0,0,0}{#1}}%
+\newcommand{\hlstd}[1]{\textcolor[rgb]{0.345,0.345,0.345}{#1}}%
+\newcommand{\hlkwa}[1]{\textcolor[rgb]{0.161,0.373,0.58}{\textbf{#1}}}%
+\newcommand{\hlkwb}[1]{\textcolor[rgb]{0.69,0.353,0.396}{#1}}%
+\newcommand{\hlkwc}[1]{\textcolor[rgb]{0.333,0.667,0.333}{#1}}%
+\newcommand{\hlkwd}[1]{\textcolor[rgb]{0.737,0.353,0.396}{\textbf{#1}}}%
+\let\hlipl\hlkwb
+
+\usepackage{framed}
+\makeatletter
+\newenvironment{kframe}{%
+ \def\at@end@of@kframe{}%
+ \ifinner\ifhmode%
+  \def\at@end@of@kframe{\end{minipage}}%
+  \begin{minipage}{\columnwidth}%
+ \fi\fi%
+ \def\FrameCommand##1{\hskip\@totalleftmargin \hskip-\fboxsep
+ \colorbox{shadecolor}{##1}\hskip-\fboxsep
+     % There is no \\@totalrightmargin, so:
+     \hskip-\linewidth \hskip-\@totalleftmargin \hskip\columnwidth}%
+ \MakeFramed {\advance\hsize-\width
+   \@totalleftmargin\z@ \linewidth\hsize
+   \@setminipage}}%
+ {\par\unskip\endMakeFramed%
+ \at@end@of@kframe}
+\makeatother
+
+\definecolor{shadecolor}{rgb}{.97, .97, .97}
+\definecolor{messagecolor}{rgb}{0, 0, 0}
+\definecolor{warningcolor}{rgb}{1, 0, 1}
+\definecolor{errorcolor}{rgb}{1, 0, 0}
+\newenvironment{knitrout}{}{} % an empty environment to be redefined in TeX
+
+\usepackage{alltt}
+
+\usepackage[left=2cm, right=2cm, top=1cm, bottom=2cm]{geometry}
+
+% Font.
+
+
+% Main packages.
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs} 
+\usepackage{rotating} 
+\usepackage{lmodern}
+
+% Required for Table.
+
+
+%%
+
+\title{SML Project - Documentation}
+\author{Tristan Leiter}
+\date{\today}
+
+%==== DOCUMENT START ==========================================================%
+
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\begin{document}
+
+\maketitle
+
+%==== ABSTRACT ================================================================%
+
+% \begin{abstract}
+% This report demonstrates the integration of R code and its output within a LaTeX document using Sweave. It covers the basic structure of a report, including a summary, chapters with subchapters, and a bibliography.
+% \end{abstract}
+
+%==== Table of content ========================================================%
+
+\tableofcontents
+\newpage
+
+%==== Introduction ============================================================%
+
+\chapter{Introduction}
+
+\section{Introduction}
+
+
+
+
+%==== Chapter 1: General ======================================================%
+
+\chapter{Exploratory Data Analysis}
+
+\section{Overview}
+
+\subsection{Description of the dataset}
+
+For this SML project, we are using the wine-quality dataset, obtained from
+Kaggle (https://www.kaggle.com/datasets/taweilo/wine-quality-dataset-balanced-classification).
+It contains 21'000 observations with 11 features and 1 dependent variable, the wine quality.
+Wine quality is an ordinal variable. It represents a ranking from 3 to 9, with
+9 being the highest score and better than all scores below it. 
+
+The dependent variable y is nicely balanced as it has the same distribution across
+all quality variables. Each quality variable contains 3'000 observations (14.3\% of
+all observations). Subsequently, we keep quality as a numeric value and set this up as
+a regression task instead of a classification approach. This is done in order to
+allow for better inference (assuming the true quality would be 5, a prediction of 9 would
+be much worse than predicting a 4).
+
+\subsection{Feature description}
+
+\begin{table}[ht]
+\centering
+\caption{Dataset Variable Descriptions}
+\label{tab:var_desc}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Variable} & \textbf{Description} & \textbf{Type} \\
+\midrule
+fixed\_acidity & Fixed acids (tartaric, malic, citric) & float64 \\
+volatile\_acidity & Volatile acids (primarily acetic) & float64 \\
+citric\_acid & Citric acid content & float64 \\
+residual\_sugar & Remaining sugar after fermentation & float64 \\
+chlorides & Salt content & float64 \\
+free\_sulfur\_dioxide & Free SO2 (preservative) & float64 \\
+total\_sulfur\_dioxide & Total SO2 (bound + free) & float64 \\
+density & Density (related to alcohol/sugar) & float64 \\
+pH & pH level (acidity indicator) & float64 \\
+sulphates & Sulphates additive amount & float64 \\
+alcohol & Alcohol percentage & float64 \\
+quality & Target: Quality score (3-9) & int64 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Feature bimodality}
+
+It can be observed that many features show a bimodal distribution (two different modes).
+We can clearly see the two distinct peaks in the histogram. This indicates that
+we observe a mixture of two different underlying distinct data generation processes.
+For example, due to the dataset including red and white wines, which usually have
+different, distinct properties.
+
+For our further process, it essentially implies a hidden categorical feature (wine type:
+red or white wine) that is not explicitly given in the dataset. It can be
+argued that decision trees should handle this case rather wll as they can easily make
+a split to seperate the two populations whilst linear models might struggle.
+
+\subsection{Feature standardization}
+
+The variances differ by several orders of magnitude (total sulfur dioxide vs density, pH value,...).
+Standardization will be essential in order for our regularized linear models to work well and
+to ensure that all features contribute equally to the model. Yet, we also sort of
+loose some variation in the feature space.
+
+\subsection{Multicollinearity}
+
+Based on the correlation plot, multicollinearity is present in our dataset. 
+Some features (free sulfur dioxide vs total sulfur dioxide or also density vs
+residual sugar) are highly positively correlated. In this case, we can expect the
+coefficients of linear models to be unstable as the model cannot properly differentiate
+the linear effect of each feature. Also, a small change in the training data
+could flip a coefficient from positive to negative, making interpretation very difficult.
+In addition, redundant features can lead to an overfitting of the model as we
+start to fit noise in the training data instead of the true signal. 
+
+Tree based models should generally work well in this environment as they will simply pick one of
+the correlated features to split on and ignore the others. It does not hurt their
+predictive performance. Yet, it will be difficult for interpreting the importance
+of each feature.
+
+\subsection{Splitting the dataset}
+We split the dataset in three subsets, the training set (50\% of the data),
+a validation set (25\% of the data), and finally the test set with the remaining
+25\%. Since the dependent variable is balanced, we do not require additional
+tools, like stratified sampling.
+
+
+%==== Chapter 2: Defining the loss-function ===================================%
+
+\chapter{Loss-function}
+
+\section{Root Mean Squared Error (RMSE)}
+
+For this project, we decided to use root mean squared error (RMSE) as the key
+loss metric for both model validation and final performance assessment in the test
+set. We perform the following minimization:
+
+\[
+RMSE = \sqrt{\frac{1}{N}\sum_{i=1}^{N} (y_i - \hat{y}_i)^2}
+\]
+
+Where:
+
+* $y_i$ is the actual quality score (e.g., 6).
+* $\hat{y}_i$ is the predicted score (e.g., 5.8).
+* $N$ is the number of observations.
+
+Whilst wine quality is an ordinal variable, a standard multi-class classification
+problem (using e.g. accuracy) is suboptimal. Firstly, accuracy would ignore
+ordinality. Predicting a quality of 3 for a true quality of 8 is penalized the same as predicting
+a 7, even though 7 is much better than a 3.
+
+RMSE also treats the target as a continous variable. If our model predicts a
+59 for a true 6, it has a very small error, whereas 5.1 would result in a bigger
+error. This rewards models that get close to the true value, even though
+we can not observe a continous value (rather a discrete one).
+
+RMSE is also easier to interprete as the target variable. An RMSE of 0.7
+would mean, on average, that our model's prediction are about 0.7
+quality points away from the actual score.
+
+\section{RMSE vs MSE}
+We chose RMSE, because it scales back to the original units of our target variable.
+MSE is difficult to interpret by itself. An RMSE of 0.7 means, "on average, our model's prediction 
+is about 0.7 points away from the true wine quality rating." We use a metric
+that matches the scale of the actual data.
+
+%==== Chapter 3: Regularized LMs ==============================================%
+
+\chapter{Regularized Linear Models}
+
+\section{Ridge}
+
+Ridge regression is a regularized linear model that addresses multicollinearity and overfitting by adding an $L_2$ penalty to the ordinary least squares loss function. This penalty shrinks the coefficients towards zero but never exactly to zero, retaining all features in the final model.
+
+The optimization problem for Ridge regression is:
+
+$$\hat{\beta}_{ridge} = \arg \min_{\beta} \left\{ \sum_{i=1}^{N} (y_i - \beta_0 - \sum_{j=1}^{p} x_{ij}\beta_j)^2 + \lambda \sum_{j=1}^{p} \beta_j^2 \right\}$$
+
+Where $\lambda \ge 0$ is a tuning parameter that controls the strength of the shrinkage.
+
+\section{Lasso}
+
+Lasso (Least Absolute Shrinkage and Selection Operator) is another regularized linear model, but it uses an $L_1$ penalty. Unlike Ridge, the $L_1$ penalty can shrink some coefficients exactly to zero, effectively performing automatic feature selection and producing sparse models.
+
+The optimization problem for Lasso regression is:
+
+$$\hat{\beta}_{lasso} = \arg \min_{\beta} \left\{ \frac{1}{2N} \sum_{i=1}^{N} (y_i - \beta_0 - \sum_{j=1}^{p} x_{ij}\beta_j)^2 + \lambda \sum_{j=1}^{p} |\beta_j| \right\}$$
+
+%==== Chapter 4: Decision Trees ===============================================%
+
+\chapter{Decision Trees}
+
+\section{Random Forest}
+
+Random Forest is an ensemble learning method that builds a large collection of de-correlated decision trees. It uses bagging (training each tree on a random bootstrap sample of the data) and feature randomness (considering only a random subset of features for each split). The final prediction for regression is the average of the predictions from all individual trees.
+
+For regression, each individual tree $T_b$ is built by recursively splitting regions to minimize the Mean Squared Error (MSE) in each resulting node:
+
+$$\text{Minimize} \sum_{R_j} \sum_{x_i \in R_j} (y_i - \hat{c}_j)^2$$
+
+Where $\hat{c}_j$ is the average value of the target variable for observations falling into region $R_j$.
+
+\section{Gradient Boosting}
+
+Gradient Boosting Machines (GBM) also build an ensemble of decision trees, but they do so sequentially rather than in parallel. Each new tree is trained to predict the pseudo-residuals (errors) of the previous ensemble of trees, effectively correcting the mistakes of its predecessors.
+
+At each step $m$, a new tree $h_m(x)$ is fitted to the negative gradient of the loss function (which, for squared error loss, is just the residual):
+
+$$F_m(x) = F_{m-1}(x) + \nu \cdot h_m(x)$$
+
+Where $F_m(x)$ is the updated model, $\nu$ is the learning rate (shrinkage) parameter, and $h_m(x)$ is the new tree that minimizes the loss:
+
+$$h_m = \arg \min_{h} \sum_{i=1}^{N} L(y_i, F_{m-1}(x_i) + h(x_i))$$
+
+For our regression task, we use the squared error loss function $L(y, F(x)) = (y - F(x))^2$.
+
+%==== Chapter 5: Additional Models ============================================%
+
+\chapter{Additional Models}
+
+\section{CatBoost}
+
+%==== Chapter 6: Results ======================================================%
+
+\chapter{Results}
+
+\section{CatBoost}
+
+
+%==== Anhang ==================================================================%
+
+\appendix 
+
+\chapter{Overview}
+
+%==== END =====================================================================%
+
+\end{document}
