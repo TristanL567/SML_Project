@@ -160,41 +160,43 @@ tools, like stratified sampling.
 
 \chapter{Loss-function}
 
-\section{Root Mean Squared Error (RMSE)}
+%%% WILL BE CHANGED.
 
-For this project, we decided to use root mean squared error (RMSE) as the key
-loss metric for both model validation and final performance assessment in the test
-set. We perform the following minimization:
-
-\[
-RMSE = \sqrt{\frac{1}{N}\sum_{i=1}^{N} (y_i - \hat{y}_i)^2}
-\]
-
-Where:
-
-* $y_i$ is the actual quality score (e.g., 6).
-* $\hat{y}_i$ is the predicted score (e.g., 5.8).
-* $N$ is the number of observations.
-
-Whilst wine quality is an ordinal variable, a standard multi-class classification
-problem (using e.g. accuracy) is suboptimal. Firstly, accuracy would ignore
-ordinality. Predicting a quality of 3 for a true quality of 8 is penalized the same as predicting
-a 7, even though 7 is much better than a 3.
-
-RMSE also treats the target as a continous variable. If our model predicts a
-59 for a true 6, it has a very small error, whereas 5.1 would result in a bigger
-error. This rewards models that get close to the true value, even though
-we can not observe a continous value (rather a discrete one).
-
-RMSE is also easier to interprete as the target variable. An RMSE of 0.7
-would mean, on average, that our model's prediction are about 0.7
-quality points away from the actual score.
-
-\section{RMSE vs MSE}
-We chose RMSE, because it scales back to the original units of our target variable.
-MSE is difficult to interpret by itself. An RMSE of 0.7 means, "on average, our model's prediction 
-is about 0.7 points away from the true wine quality rating." We use a metric
-that matches the scale of the actual data.
+% \section{Root Mean Squared Error (RMSE)}
+% 
+% For this project, we decided to use root mean squared error (RMSE) as the key
+% loss metric for both model validation and final performance assessment in the test
+% set. We perform the following minimization:
+% 
+% \[
+% RMSE = \sqrt{\frac{1}{N}\sum_{i=1}^{N} (y_i - \hat{y}_i)^2}
+% \]
+% 
+% Where:
+% 
+% * $y_i$ is the actual quality score (e.g., 6).
+% * $\hat{y}_i$ is the predicted score (e.g., 5.8).
+% * $N$ is the number of observations.
+% 
+% Whilst wine quality is an ordinal variable, a standard multi-class classification
+% problem (using e.g. accuracy) is suboptimal. Firstly, accuracy would ignore
+% ordinality. Predicting a quality of 3 for a true quality of 8 is penalized the same as predicting
+% a 7, even though 7 is much better than a 3.
+% 
+% RMSE also treats the target as a continous variable. If our model predicts a
+% 59 for a true 6, it has a very small error, whereas 5.1 would result in a bigger
+% error. This rewards models that get close to the true value, even though
+% we can not observe a continous value (rather a discrete one).
+% 
+% RMSE is also easier to interprete as the target variable. An RMSE of 0.7
+% would mean, on average, that our model's prediction are about 0.7
+% quality points away from the actual score.
+% 
+% \section{RMSE vs MSE}
+% We chose RMSE, because it scales back to the original units of our target variable.
+% MSE is difficult to interpret by itself. An RMSE of 0.7 means, "on average, our model's prediction 
+% is about 0.7 points away from the true wine quality rating." We use a metric
+% that matches the scale of the actual data.
 
 %==== Chapter 3: Regularized LMs ==============================================%
 
