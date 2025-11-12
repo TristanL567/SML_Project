@@ -24,7 +24,8 @@ packages <- c("here", "dplyr", "tidyr",
               "ggplot2", "reshape2", "patchwork",
               "glmnet",
               "randomForest", "gbm",
-              "remotes")
+              "remotes",
+              "gridExtra")
 
 for(i in 1:length(packages)){
   package_name <- packages[i]
@@ -55,6 +56,31 @@ skew <- function(x) {
   return(skewness_value)
 }
 
+## Use the Macro F1-score as the new loss function.
+calculate_macro_f1 <- function(actual, predicted) {
+  actual <- as.factor(actual)
+  predicted <- as.factor(predicted)
+  all_levels <- union(levels(actual), levels(predicted))
+  actual <- factor(actual, levels = all_levels)
+  predicted <- factor(predicted, levels = all_levels)
+  
+  cm <- table(Actual = actual, Predicted = predicted)
+  
+  all_f1_scores <- c()
+  for (class in all_levels) {
+    tp <- cm[class, class]
+    fp <- sum(cm[, class]) - tp
+    fn <- sum(cm[class, ]) - tp
+    
+    precision <- if ((tp + fp) > 0) tp / (tp + fp) else 0
+    recall <- if ((tp + fn) > 0) tp / (tp + fn) else 0
+    
+    f1 <- if ((precision + recall) > 0) 2 * (precision * recall) / (precision + recall) else 0
+    all_f1_scores <- c(all_f1_scores, f1)
+  }
+  
+  return(mean(all_f1_scores, na.rm = TRUE))
+}
 
 #==== 1C - Parameters =========================================================#
 
@@ -203,192 +229,156 @@ ggsave(
 )
 
 #==== 02d - Splitting the dataset =============================================#
-## 50/25/25 rule - train, validation, test
 set.seed(123)
 
-train_index <- sample(1:nrow(data_standardized), size = 0.75 * nrow(data_standardized))
+train_index <- sample(1:nrow(data_standardized), size = 0.80 * nrow(data_standardized))
+
 Train <- data_standardized[train_index, ]
 Test  <- data_standardized[-train_index, ]
 
-validation_index <- sample(1:nrow(Train), size = (2.5/7.5) * nrow(Train))
-Validation <- Train[validation_index, ]   
-Train  <- Train[-validation_index, ]
+## We no longer need a separate 'Validation' set.
+## Cross-validation on the 'Train' set will replace it.
 
 ## Now we are done preparing the data.
 ## - Standardized the features (discovered bimodiality in two datasets, points to decision trees).
 ## - Detected skewness and differences in the variation/variance.
 ## - Looked at multicollinearity. Most variables show a high correlation with eachother.
 ## - Dependent variable is set up as a factor. We are working on a classification task.
+## - Data is split into Train and Test sets for a robust CV workflow.
 
 #==============================================================================#
 #==== 03 - Analysis ===========================================================#
 #==============================================================================#
 
+#=======================#
+## Parameters.
+#=======================#
 set.seed(123)
+k_folds <- 5
+
+#=======================#
+## Main Code.
+#=======================#
 
 tryCatch({
 
-## Generally, we rely on RMSE is our loss function. It is unreliable
-## if the dependent variable is very unbalanced, but we are lucky:
-## the dataset is very balanced and that the data is ordinal!
-
+## We are now using a k-fold cross-validation workflow.
+## For our evaluation metric, we will use F1-score.
+## Since the data is perfectly balanced, maximizing accuracy during CV is a 
+## direct and efficient proxy for maximizing the F1-score.
+  
 #==== 03a - Linear regression (Lasso and Ridge) ===============================#
+  
+## Prepare the data matrices.
 train_x <- model.matrix(quality ~ ., data = Train)[, -1]
 train_y <- Train$quality
-
-val_x <- model.matrix(quality ~ ., data = Validation)[, -1]
-val_y <- Validation$quality
-
+  
 test_x <- model.matrix(quality ~ ., data = Test)[, -1]
 test_y <- Test$quality
 
 #=======================#
 ## Lasso.
 #=======================#
-# Change family to "gaussian" for regression
-lasso_model <- glmnet(train_x, train_y, 
-                      alpha = 1, 
-                      family = "multinomial")
-lambdas <- lasso_model$lambda
-
-val_preds <- predict(lasso_model, newx = val_x, s = lambdas, type = "class")
-accuracies <- rep(NA, length(lambdas))
-for (i in 1:length(lambdas)) {
-  accuracies[i] <- mean(val_preds[, i] == val_y)
-}
-
-best_lasso_acc <- max(accuracies)
-best_lambda <- lambdas[which.max(accuracies)]
+cv_lasso <- cv.glmnet(train_x, train_y,
+                      alpha = 1,
+                      family = "multinomial",
+                      type.measure = "class", # Minimize misclassification error (maximizes accuracy)
+                      nfolds = k_folds)
+  
+## The best lambda is the one that minimizes the cross-validated error.
+best_lambda_lasso <- cv_lasso$lambda.min
 
 #=======================#
 ## Ridge.
 #=======================#
-ridge_model <- glmnet(train_x, train_y, 
-                      alpha = 0, 
-                      family = "multinomial")
+cv_ridge <- cv.glmnet(train_x, train_y,
+                      alpha = 0,
+                      family = "multinomial",
+                      type.measure = "class",
+                      nfolds = k_folds)
 
-lambdas_r <- ridge_model$lambda
-val_preds_r <- predict(ridge_model, newx = val_x, s = lambdas_r, type = "class")
-
-accuracies_r <- rep(NA, length(lambdas_r))
-for (i in 1:length(lambdas_r)) {
-  accuracies_r[i] <- mean(val_preds_r[, i] == val_y)
-}
-
-best_ridge_acc <- max(accuracies_r)
-best_lambda_r <- lambdas_r[which.max(accuracies_r)]
+best_lambda_ridge <- cv_ridge$lambda.min
 
 #=======================#
 ## Evaluate it on the test set.
 #=======================#
-final_lasso_preds <- predict(lasso_model, newx = test_x, s = best_lambda, type = "class")
-final_ridge_preds <- predict(ridge_model, newx = test_x, s = best_lambda_r, type = "class")
+## Lasso final evaluation
+final_lasso_preds <- predict(cv_lasso, newx = test_x, s = best_lambda_lasso, type = "class")
+lasso_test_f1 <- calculate_macro_f1(actual = test_y, predicted = final_lasso_preds)
 
-lasso_acc <- mean(final_lasso_preds == test_y)
-ridge_acc <- mean(final_ridge_preds == test_y)
+## Ridge final evaluation
+final_ridge_preds <- predict(cv_ridge, newx = test_x, s = best_lambda_ridge, type = "class")
+ridge_test_f1 <- calculate_macro_f1(actual = test_y, predicted = final_ridge_preds)
 
-lasso_test_rmse <- NA
-ridge_test_rmse <- NA
-
-print("--- FINAL MODEL ASSESSMENT (Classification Approach) ---")
-print(paste("Final Lasso Accuracy (Test Set):", round(lasso_acc, 4)))
-print(paste("Final Ridge Accuracy (Test Set):", round(ridge_acc, 4)))
+print("--- FINAL MODEL ASSESSMENT (F1-Score on Test Set) ---")
+print(paste("Final Lasso F1-Score (Test Set):", round(lasso_test_f1, 4)))
+print(paste("Final Ridge F1-Score (Test Set):", round(ridge_test_f1, 4)))
 
 #=======================#
 ## Visualisation Updates.
 #=======================#
 
-tryCatch({
-  
-  # Changed to plot Accuracy
-  lasso_acc_df <- data.frame(lambda = lambdas, accuracy = accuracies)
-  ridge_acc_df <- data.frame(lambda = lambdas_r, accuracy = accuracies_r)
-  
-  plot_lasso_acc <- ggplot(lasso_acc_df, aes(x = lambda, y = accuracy)) +
-    geom_line(linewidth = 1, color = "#7B68EE") +
-    geom_vline(xintercept = best_lambda, linetype = "dashed", color = "black", linewidth = 1) +
-    scale_x_reverse() +
-    labs(title = "Lasso: Validation Accuracy vs. Lambda", x = "Lambda", y = "Validation Accuracy") +
-    theme_light() +
-    theme(plot.title = element_text(hjust = 0.5))
-  
-  plot_ridge_acc <- ggplot(ridge_acc_df, aes(x = lambda, y = accuracy)) +
-    geom_line(linewidth = 1, color = "#CD5C5C") +
-    geom_vline(xintercept = best_lambda_r, linetype = "dashed", color = "black", linewidth = 1) +
-    scale_x_reverse() +
-    labs(title = "Ridge: Validation Accuracy vs. Lambda", x = "Lambda", y = "Validation Accuracy") +
-    theme_light() +
-    theme(plot.title = element_text(hjust = 0.5))
-  
-  # You can plot these if you want
-  # print(plot_lasso_acc)
-  # print(plot_ridge_acc)
-  
-}, silent = TRUE)
+plot(cv_lasso)
+plot(cv_ridge)
 
 tryCatch({
   
-  lasso_coefs_matrix <- as.matrix(t(coef(lasso_model)$"6"))
-  lasso_df <- as.data.frame(lasso_coefs_matrix)
-  lasso_df$lambda <- lasso_model$lambda
+  # We can now update the coefficient plots to show the best lambda found via CV.
+  lasso_model_fit <- cv_lasso$glmnet.fit
+  ridge_model_fit <- cv_ridge$glmnet.fit
   
+  # Lasso Coefficients Plot
+  lasso_coefs_matrix <- as.matrix(t(coef(lasso_model_fit)$"6"))
+  lasso_df <- as.data.frame(lasso_coefs_matrix)
+  lasso_df$lambda <- lasso_model_fit$lambda
   lasso_plot_df <- melt(lasso_df, id.vars = "lambda", variable.name = "Coefficient", value.name = "Value")
   lasso_plot_df <- filter(lasso_plot_df, Coefficient != "(Intercept)")
   
-  lasso_plot <- ggplot(lasso_plot_df, aes(x = lambda, y = Value, color = Coefficient)) +
+  plot_lasso_coefs <- ggplot(lasso_plot_df, aes(x = lambda, y = Value, color = Coefficient)) +
     geom_line(linewidth = 1) +
-    geom_vline(xintercept = best_lambda, linetype = "dashed", color = "black", linewidth = 1) +
-    scale_x_reverse() +
-    labs(title = "Lasso Coefficients (for class '6')", 
-         subtitle = paste("Optimal lambda:", round(best_lambda, 5)), 
-         x = "Lambda", y = "Coefficient") +
+    geom_vline(xintercept = best_lambda_lasso, linetype = "dashed", color = "black", linewidth = 1) +
+    scale_x_log10() + # Use a log scale for lambda, which is standard for these plots
+    labs(title = "Lasso Coefficients (for class '6')",
+         subtitle = paste("Optimal lambda found via CV:", round(best_lambda_lasso, 5)),
+         x = "Lambda (log scale)", y = "Coefficient Value") +
     theme_light() +
-    theme(plot.title = element_text(hjust = 0.5), 
-          plot.subtitle = element_text(hjust = 0.5), 
-          legend.position = "none",
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5),
+          legend.position = "none")
+  
+  # Ridge Coefficients Plot
+  ridge_coefs_matrix <- as.matrix(t(coef(ridge_model_fit)$"6"))
+  ridge_df <- as.data.frame(ridge_coefs_matrix)
+  ridge_df$lambda <- ridge_model_fit$lambda
+  ridge_plot_df <- melt(ridge_df, id.vars = "lambda", variable.name = "Coefficient", value.name = "Value")
+    ridge_plot_df <- filter(ridge_plot_df, Coefficient != "(Intercept)" & Coefficient != "V1")
+  
+  plot_ridge_coefs <- ggplot(ridge_plot_df, aes(x = lambda, y = Value, color = Coefficient)) +
+    geom_line(linewidth = 1) +
+    geom_vline(xintercept = best_lambda_ridge, linetype = "dashed", color = "black", linewidth = 1) +
+    scale_x_log10() +
+    labs(title = "Ridge Coefficients (for class '6')",
+         subtitle = paste("Optimal lambda found via CV:", round(best_lambda_ridge, 5)),
+         x = "Lambda (log scale)", y = "Coefficient Value") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5),
+          legend.position = "bottom",
           legend.title = element_blank())
   
-  # Ridge Coefs for class "6"
-  ridge_coefs_matrix <- as.matrix(t(coef(ridge_model)$"6")) 
-  ridge_df <- as.data.frame(ridge_coefs_matrix)
-  ridge_df$lambda <- ridge_model$lambda
-  
-  ridge_plot_df <- melt(ridge_df, id.vars = "lambda", variable.name = "Coefficient", value.name = "Value")
-  ridge_plot_df <- filter(ridge_plot_df, Coefficient != "(Intercept)")
-  
-  ridge_plot <- ggplot(
-    filter(ridge_plot_df, Coefficient != "V1" & Coefficient != "(Intercept)"), 
-    aes(x = lambda, y = Value, color = Coefficient)
-  ) +
-    geom_line(linewidth = 1) +
-    geom_vline(xintercept = best_lambda_r, linetype = "dashed", color = "black", linewidth = 1) +
-    scale_x_reverse() +
-    coord_cartesian(xlim = c(2.5, 0)) +
-    labs(title = "Ridge Coefficients (for class '6')", 
-         subtitle = paste("Optimal lambda:", round(best_lambda_r, 5)), 
-         x = "Lambda", y = "Coefficient") +
-    theme_light() +
-    theme(plot.title = element_text(hjust = 0.5), 
-          plot.subtitle = element_text(hjust = 0.5), 
-          legend.position = "bottom", 
-          legend.title = element_blank(),
-          legend.text = element_text(size = 10))
-  
-  # Save or display
-  
-  plot <- ridge_plot | lasso_plot
-  Path <- file.path(Charts_Directory, "03_Linear_Shrinkage_Coefficients.png")
+  # Combine and save the plots
+  combined_plot <- plot_lasso_coefs | plot_ridge_coefs
+  Path <- file.path(Charts_Directory, "03_Linear_Shrinkage_Coefficients_CV.png")
   
   ggsave(
     filename = Path,
-    plot = plot,
+    plot = combined_plot,
     width = 3750,
     height = 1833,
     units = "px",
     dpi = 300,
     limitsize = FALSE
-    
-  )  
+  )
   
 }, silent = TRUE)
 
@@ -398,67 +388,75 @@ tryCatch({
 
 #==== 03b - Decision Tree's - Random Forest ===================================#
 
-set.seed(123)
-
 tryCatch({
   
 #=======================#
-## Parameters.
+## Parameters for CV.
+#=======================#
+mtry_values <- c(2, 3, 4, 5, 6) ## 2 is the best one.
+nfolds <- k_folds
+
+folds <- sample(cut(seq(1, nrow(Train)), breaks = nfolds, labels = FALSE))
+
+#=======================#
+## Main Model Tuning with k-fold Cross-Validation.
 #=======================#
 
-mtry_values <- c(2, 3, 4, 5, 6)
-
-#=======================#
-## Main Model.
-#=======================#
-
-Train$quality <- as.factor(Train$quality)
-Validation$quality <- as.factor(Validation$quality)
-Test$quality <- as.factor(Test$quality)
-
-rf_results <- data.frame(mtry = mtry_values, Accuracy = NA) 
+rf_results <- data.frame(mtry = mtry_values, F1_Score = NA) 
+print("--- Starting Random Forest Tuning with 5-fold Cross-Validation ---")
 
 for (i in 1:length(mtry_values)) {
   
-  rf_model <- randomForest(
-    quality ~ ., 
-    data = Train, 
-    mtry = mtry_values[i],
-    ntree = 500  
-  )
+  current_mtry <- mtry_values[i]
+  fold_f1_scores <- c() # Store F1 scores for each fold
   
-  val_preds <- predict(rf_model, newdata = Validation)
-    rf_results$Accuracy[i] <- mean(val_preds == Validation$quality)
+  for (k in 1:nfolds) {
+    
+    val_indices <- which(folds == k)
+    train_fold <- Train[-val_indices, ]
+    val_fold   <- Train[val_indices, ]
+    
+    rf_model <- randomForest(
+      quality ~ ., 
+      data = train_fold, 
+      mtry = current_mtry,
+      ntree = 500
+    )
+    
+    val_preds <- predict(rf_model, newdata = val_fold)
+    f1 <- calculate_macro_f1(actual = val_fold$quality, predicted = val_preds)
+    fold_f1_scores <- c(fold_f1_scores, f1)
+  }
   
-  print(paste("Completed mtry =", mtry_values[i], 
-              "| Validation Accuracy:", round(rf_results$Accuracy[i], 4)))
+  mean_f1 <- mean(fold_f1_scores)
+  rf_results$F1_Score[i] <- mean_f1
+  
+  print(paste("Completed mtry =", current_mtry, 
+              "| Mean CV F1-Score:", round(mean_f1, 4)))
 }
 
 print("--- Tuning Complete ---")
 print(rf_results)
 
-best_mtry <- rf_results$mtry[which.max(rf_results$Accuracy)] 
-print(paste("Best mtry value found (max accuracy):", best_mtry))
+best_mtry <- rf_results$mtry[which.max(rf_results$F1_Score)] 
+print(paste("Best mtry value found (max F1-Score):", best_mtry))
 
 #=======================#
-## Model Assessment on the training data.
+## Final Model Training and Assessment.
 #=======================#
-
 final_rf_model <- randomForest(
   quality ~ ., 
-  data = Train, 
+  data = Train, # Using the full 80% training set
   mtry = best_mtry,
   ntree = 500,
   importance = TRUE
 )
 
 rf_test_preds <- predict(final_rf_model, newdata = Test)
-
-rf_final_acc <- mean(rf_test_preds == Test$quality)
-rf_final_rmse <- NA 
+rf_final_f1 <- calculate_macro_f1(actual = Test$quality, predicted = rf_test_preds)
 
 print("--- FINAL RANDOM FOREST ASSESSMENT ---")
-print(paste("Final RF Accuracy (Test Set):", rf_final_acc))
+print(paste("Final RF F1-Score (Test Set):", round(rf_final_f1, 4)))
 
 #=======================#
 ## Visualisation.
@@ -466,14 +464,15 @@ print(paste("Final RF Accuracy (Test Set):", rf_final_acc))
 
 tryCatch({
   
+  #--- Plot 1: Feature Importance (Your Original Plot) ---#
   importance_data <- as.data.frame(importance(final_rf_model))
   importance_data$Variable <- rownames(importance_data)
-
-  plot <- ggplot(importance_data, aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  
+  plot_importance <- ggplot(importance_data, aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
     geom_bar(stat = "identity", fill = blue) +
     coord_flip() +
     labs(title = "Feature Importance (Random Forest Classification)",
-         subtitle = "",
+         subtitle = paste("Best mtry =", best_mtry),
          x = "Features",
          y = "Mean Decrease in Accuracy") +
     theme_light() +
@@ -481,10 +480,9 @@ tryCatch({
           plot.subtitle = element_text(hjust = 0.5))
   
   Path <- file.path(Charts_Directory, "04_Random_Forest_FeatureImportance_Class.png")
-  
   ggsave(
     filename = Path,
-    plot = plot,
+    plot = plot_importance,
     width = 3750,
     height = 1833,
     units = "px",
@@ -492,13 +490,14 @@ tryCatch({
     limitsize = FALSE
   )
   
-  cm_data <- as.data.frame(table(Actual = Test$quality, Predicted = rf_test_preds))
+  #--- Plot 2: Raw Count Confusion Matrix (Your Original Plot) ---#
+  cm_data_raw <- as.data.frame(table(Actual = Test$quality, Predicted = rf_test_preds))
   
-  plot_cm <- ggplot(cm_data, aes(x = Actual, y = Predicted, fill = Freq)) +
+  plot_cm_raw <- ggplot(cm_data_raw, aes(x = Actual, y = Predicted, fill = Freq)) +
     geom_tile(color = "white") +
     scale_fill_gradient(low = "white", high = blue) +
     geom_text(aes(label = Freq), vjust = 1) +
-    labs(title = "Random Forest Confusion Matrix",
+    labs(title = "Random Forest Confusion Matrix (Raw Counts)",
          x = "Actual Quality",
          y = "Predicted Quality",
          fill = "Frequency") +
@@ -506,10 +505,9 @@ tryCatch({
     theme(plot.title = element_text(hjust = 0.5))
   
   Path <- file.path(Charts_Directory, "04b_Random_Forest_ConfusionMatrix.png")
-  
   ggsave(
     filename = Path,
-    plot = plot_cm,
+    plot = plot_cm_raw,
     width = 3750,
     height = 1833,
     units = "px",
@@ -517,8 +515,77 @@ tryCatch({
     limitsize = FALSE
   )
   
+  #--- Plot 3: Normalized Confusion Matrix (NEW) ---#
   
-}, silent = TRUE)
+  ## Calculate percentages for the plot
+  cm_percent_rf <- cm_data_raw %>%
+    group_by(Actual) %>%
+    mutate(Percentage = Freq / sum(Freq),
+           Label = paste0(round(Percentage * 100), "%"))
+  
+  ## Create the heatmap plot
+  plot_cm_normalized <- ggplot(cm_percent_rf, aes(x = Actual, y = Predicted, fill = Percentage)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(low = "white", high = orange, labels = scales::percent) +
+    geom_text(aes(label = Label), vjust = 1) +
+    labs(title = "Normalized Confusion Matrix (Random Forest)",
+         subtitle = "Rows sum to 100%",
+         x = "Actual Quality",
+         y = "Predicted Quality",
+         fill = "Percentage of Actual") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5),
+          aspect.ratio = 1)
+  
+  ## Save the plot
+  Path <- file.path(Charts_Directory, "04e_Random_Forest_Normalized_CM.png")
+  ggsave(
+    filename = Path,
+    plot = plot_cm_normalized,
+    width = 2500,
+    height = 2500,
+    units = "px",
+    dpi = 300
+  )
+  
+  #--- Plot 4: Error Analysis Plot (NEW) ---#
+  
+  ## Create a dataframe of test results, including the predictions
+  results_df <- Test
+  results_df$Predicted <- rf_test_preds
+  results_df$Status <- ifelse(results_df$quality == results_df$Predicted, "Correct", "Incorrect")
+  
+  ## Filter for only the misclassified samples
+  misclassified_df <- results_df %>%
+    filter(Status == "Incorrect")
+  
+  ## Create a plot showing where the errors occur
+  plot_error_analysis <- ggplot(misclassified_df, aes(x = quality, y = Predicted)) +
+    geom_count(aes(color = after_stat(n)), show.legend = TRUE) +
+    scale_color_gradient(low = blue, high = red) +
+    labs(title = "Analysis of Misclassifications (Random Forest)",
+         subtitle = "Where are the model's errors concentrated?",
+         x = "Actual Quality",
+         y = "Predicted Quality",
+         size = "Number of Errors",
+         color = "Count") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5),
+          aspect.ratio = 1) +
+    guides(color = "none")
+  
+  ## Save the plot
+  Path <- file.path(Charts_Directory, "04f_Random_Forest_Error_Analysis.png")
+  ggsave(
+    filename = Path,
+    plot = plot_error_analysis,
+    width = 2500,
+    height = 2500,
+    units = "px",
+    dpi = 300
+  )
 
 ## End of the tryCatch() statement.
 
@@ -526,57 +593,53 @@ tryCatch({
 
 #==== 03c - Decision Tree's - Gradient Boosting ===============================#
 
-set.seed(123)
-
 tryCatch({
 
 #=======================#
-## Parameters.
+## Parameters & Data Prep.
 #=======================#
-
-  Train_GBM <- Train
-  Validation_GBM <- Validation
-  Test_GBM <- Test
+## The gbm package requires the target variable to be 0-indexed for multinomial classification.
+## We will create copies of our dataframes for this purpose.
   
-  Train_GBM$quality <- as.integer(Train$quality) - 1
-  Validation_GBM$quality <- as.integer(Validation$quality) - 1
-  Test_GBM$quality <- as.integer(Test$quality) - 1
+Train_GBM <- Train
+Train_GBM$quality <- as.integer(Train_GBM$quality) - 3 # Levels 3-9 become 0-6
   
-  Train_Num <- rbind(Train_GBM, Validation_GBM)
+Test_GBM <- Test
+Test_GBM$quality <- as.integer(Test_GBM$quality) - 3 # Levels 3-9 become 0-6
   
-depth_values <- c(6, 8, 10)
+depth_values <- c(4, 6, 8, 10)
 shrinkage <- 0.01
 
 #=======================#
-## Main Model.
+## Main Model Tuning with Built-in Cross-Validation.
 #=======================#
 gbm_results <- data.frame(depth = depth_values, 
                           best_trees = NA, 
                           cv_Error = NA) 
 
-print("--- Starting GBM Tuning (Classification Mode) ---")
+print("--- Starting GBM Tuning with 5-fold Cross-Validation ---")
 
 for (i in 1:length(depth_values)) {
   gbm_model <- gbm(
     quality ~ .,
-    data = Train_Num,
+    data = Train_GBM, # NOTE: We now use our 80% Train set directly
     distribution = "multinomial",
     n.trees = 2000,
     interaction.depth = depth_values[i],
     shrinkage = shrinkage,
-    cv.folds = 5,
+    cv.folds = 5, # The model performs k-fold CV internally
     n.minobsinnode = 10,      
     n.cores = NULL 
   )
   
   best_M <- gbm.perf(gbm_model, plot.it = FALSE, method = "cv")
-    best_cv_error <- gbm_model$cv.error[best_M] 
+  best_cv_error <- gbm_model$cv.error[best_M] 
   
   gbm_results$cv_Error[i] <- best_cv_error
   gbm_results$best_trees[i] <- best_M
   
   print(paste("Depth:", depth_values[i], "| Best Trees:", best_M, 
-              "| CV Error (Deviance):", round(best_cv_error, 4)))
+              "| Min CV Error (Deviance):", round(best_cv_error, 4)))
 }
 
 print("--- Tuning Complete ---")
@@ -585,15 +648,15 @@ print(gbm_results)
 best_depth <- gbm_results$depth[which.min(gbm_results$cv_Error)]
 best_trees <- gbm_results$best_trees[which.min(gbm_results$cv_Error)]
 
-print(paste("Best Interaction Depth (J) found:", best_depth))
-print(paste("Best Number of Trees (M) found:", best_trees))
+print(paste("Best Interaction Depth found:", best_depth))
+print(paste("Best Number of Trees found:", best_trees))
 
 #=======================#
-## Final Model.
+## Final Model Training and Assessment.
 #=======================#
 final_gbm_model <- gbm(
   quality ~ .,
-  data = Train_Num, 
+  data = Train_GBM, # Using the full 80% training set
   distribution = "multinomial", 
   n.trees = best_trees,
   interaction.depth = best_depth,
@@ -609,13 +672,14 @@ gbm_pred_probs <- predict(final_gbm_model,
                           type = "response") 
 
 gbm_prob_matrix <- gbm_pred_probs[,,1]
-gbm_final_preds <- apply(gbm_prob_matrix, 1, which.max) - 1
+gbm_final_preds_numeric <- apply(gbm_prob_matrix, 1, which.max) - 1
 
-gbm_final_acc <- mean(gbm_final_preds == Test_GBM$quality)
-gbm_final_rmse <- NA 
+gbm_final_preds_factor <- as.factor(gbm_final_preds_numeric + 3)
+
+gbm_final_f1 <- calculate_macro_f1(actual = Test$quality, predicted = gbm_final_preds_factor)
 
 print("--- FINAL GRADIENT BOOSTING ASSESSMENT ---")
-print(paste("Final GBM Accuracy (Test Set):", round(gbm_final_acc, 4)))
+print(paste("Final GBM F1-Score (Test Set):", round(gbm_final_f1, 4)))
 
 #=======================#
 ## Visualisation.
@@ -623,22 +687,24 @@ print(paste("Final GBM Accuracy (Test Set):", round(gbm_final_acc, 4)))
 
 tryCatch({
   
+  #--- Plot 1: Feature Importance (Your Original Plot) ---#
   importance_data_gbm <- as.data.frame(summary(final_gbm_model))
   
-  plot_gbm_imp <- ggplot(importance_data_gbm, aes(x = reorder(var, rel.inf), y = rel.inf)) +
+  plot_importance_gbm <- ggplot(importance_data_gbm, aes(x = reorder(var, rel.inf), y = rel.inf)) +
     geom_bar(stat = "identity", fill = blue) +
     coord_flip() +
     labs(title = "Feature Importance (GBM Classification)",
+         subtitle = paste("Best depth =", best_depth, "& Best n.trees =", best_trees),
          x = "Features",
          y = "Relative Influence") +
     theme_light() +
-    theme(plot.title = element_text(hjust = 0.5))
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5))
   
   Path <- file.path(Charts_Directory, "04c_GBM_FeatureImportance.png")
-  
   ggsave(
     filename = Path,
-    plot = plot_gbm_imp,
+    plot = plot_importance_gbm,
     width = 3750,
     height = 1833,
     units = "px",
@@ -646,25 +712,22 @@ tryCatch({
     limitsize = FALSE
   )
   
-}, silent = TRUE)
-
-
-tryCatch({
+  #--- Plot 2: Raw Count Confusion Matrix ---#
+  actual_labels    <- Test$quality
+  predicted_labels <- gbm_final_preds_factor
   
-  actual_labels    <- as.factor(Test_GBM$quality + 3)
-  predicted_labels <- as.factor(gbm_final_preds + 3)
+  # Ensure all factor levels are present for a complete matrix
+  all_levels <- levels(Test$quality)
+  actual_labels <- factor(actual_labels, levels = all_levels)
+  predicted_labels <- factor(predicted_labels, levels = all_levels)
   
-  all_levels <- as.factor(3:9)
-  actual_labels <- factor(actual_labels, levels = levels(all_levels))
-  predicted_labels <- factor(predicted_labels, levels = levels(all_levels))
+  cm_data_raw_gbm <- as.data.frame(table(Actual = actual_labels, Predicted = predicted_labels))
   
-  cm_data_gbm <- as.data.frame(table(Actual = actual_labels, Predicted = predicted_labels))
-  
-  plot_gbm_cm <- ggplot(cm_data_gbm, aes(x = Actual, y = Predicted, fill = Freq)) +
+  plot_cm_raw_gbm <- ggplot(cm_data_raw_gbm, aes(x = Actual, y = Predicted, fill = Freq)) +
     geom_tile(color = "white") +
     scale_fill_gradient(low = "white", high = blue) +
     geom_text(aes(label = Freq), vjust = 1) +
-    labs(title = "GBM Confusion Matrix",
+    labs(title = "GBM Confusion Matrix (Raw Counts)",
          x = "Actual Quality",
          y = "Predicted Quality",
          fill = "Frequency") +
@@ -672,15 +735,82 @@ tryCatch({
     theme(plot.title = element_text(hjust = 0.5))
   
   Path <- file.path(Charts_Directory, "04d_GBM_ConfusionMatrix.png")
-  
   ggsave(
     filename = Path,
-    plot = plot_gbm_cm,
+    plot = plot_cm_raw_gbm,
     width = 3750,
     height = 1833,
     units = "px",
     dpi = 300,
     limitsize = FALSE
+  )
+  
+  #--- Plot 3: Normalized Confusion Matrix (NEW) ---#
+  
+  cm_percent_gbm <- cm_data_raw_gbm %>%
+    group_by(Actual) %>%
+    mutate(Percentage = Freq / sum(Freq),
+           Label = paste0(round(Percentage * 100), "%"))
+  
+  plot_cm_normalized_gbm <- ggplot(cm_percent_gbm, aes(x = Actual, y = Predicted, fill = Percentage)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(low = "white", high = orange, labels = scales::percent) +
+    geom_text(aes(label = Label), vjust = 1) +
+    labs(title = "Normalized Confusion Matrix (GBM)",
+         subtitle = "Rows sum to 100%",
+         x = "Actual Quality",
+         y = "Predicted Quality",
+         fill = "Percentage of Actual") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5),
+          aspect.ratio = 1)
+  
+  ## Save the plot
+  Path <- file.path(Charts_Directory, "04g_GBM_Normalized_CM.png")
+  ggsave(
+    filename = Path,
+    plot = plot_cm_normalized_gbm,
+    width = 2500,
+    height = 2500,
+    units = "px",
+    dpi = 300
+  )
+  
+  #--- Plot 4: Error Analysis Plot (NEW) ---#
+  
+  results_df_gbm <- Test
+  results_df_gbm$Predicted <- gbm_final_preds_factor
+  results_df_gbm$Status <- ifelse(results_df_gbm$quality == results_df_gbm$Predicted, "Correct", "Incorrect")
+  
+  misclassified_df_gbm <- results_df_gbm %>%
+    filter(Status == "Incorrect")
+  
+  ## Create a plot showing where the errors occur
+  plot_error_analysis_gbm <- ggplot(misclassified_df_gbm, aes(x = quality, y = Predicted)) +
+    geom_count(aes(color = after_stat(n)), show.legend = TRUE) +
+    scale_color_gradient(low = blue, high = red) +
+    labs(title = "Analysis of Misclassifications (GBM)",
+         subtitle = "Where are the model's errors concentrated?",
+         x = "Actual Quality",
+         y = "Predicted Quality",
+         size = "Number of Errors",
+         color = "Count") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5),
+          aspect.ratio = 1) +
+    guides(color = "none")
+  
+  ## Save the plot
+  Path <- file.path(Charts_Directory, "04h_GBM_Error_Analysis.png")
+  ggsave(
+    filename = Path,
+    plot = plot_error_analysis_gbm,
+    width = 2500,
+    height = 2500,
+    units = "px",
+    dpi = 300
   )
   
 }, silent = TRUE)
@@ -692,66 +822,88 @@ tryCatch({
 #==============================================================================#
 
 #==== 04a - Data ==============================================================#
-## Collect the accuracy and RMSE scores per model used.
 
 results_df <- data.frame(
   Model = c("Lasso", "Ridge", "Random Forest", "Gradient Boosting"),
-  
-  Accuracy = c(lasso_acc, 
-               ridge_acc, 
-               rf_final_acc, 
-               gbm_final_acc),
-  
-  RMSE = c(lasso_test_rmse, 
-           ridge_test_rmse, 
-           rf_final_rmse, 
-           gbm_final_rmse)
+  F1_Score = c(lasso_test_f1, 
+               ridge_test_f1, 
+               rf_final_f1, 
+               gbm_final_f1)
 )
 
+print("--- Final Model Performance ---")
+results_df <- results_df[order(results_df$F1_Score, decreasing = TRUE), ]
 print(results_df)
+
 
 #==== 04b - Visualisation =====================================================#
 
 #=====================#
-## Accuracy.
+## F1-Score Bar Chart.
 #=====================#
 
-plot_acc <- ggplot(results_df, aes(x = reorder(Model, Accuracy), y = Accuracy)) +
+plot_f1_comparison <- ggplot(results_df, aes(x = reorder(Model, F1_Score), y = F1_Score)) +
   geom_bar(stat = "identity", aes(fill = Model), width = 0.7) +
-    geom_text(aes(label = round(Accuracy, 3)), vjust = -0.5) +
-  labs(title = "Final Model Accuracy",
+  geom_text(aes(label = round(F1_Score, 3)), vjust = -0.5, size = 4) +
+  labs(title = "Final Model Comparison: F1-Score on Test Set",
        x = "Model",
-       y = "Accuracy") +
+       y = "Macro F1-Score") +
+  ylim(0, 1) + # F1-score is always between 0 and 1
   theme_light() +
   theme(legend.position = "none",
-        plot.title = element_text(hjust = 0.5))
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1)) # Angle labels if they overlap
 
-Path <- file.path(Charts_Directory, "05_Accuracy_Comparison.png")
+Path <- file.path(Charts_Directory, "05_F1_Score_Comparison.png")
 ggsave(
   filename = Path,
-  plot = plot_acc,
-  width = 3750,
-  height = 1833,
+  plot = plot_f1_comparison,
+  width = 2500,
+  height = 1800,
   units = "px",
   dpi = 300,
   limitsize = FALSE
 )
 
-#=====================#
-## Combination.
-#=====================#
+#==== 04c - Advanced Visualisation (Lollipop Chart + Table) ==============#
 
-# Path <- file.path(Charts_Directory, "07_Accuracy_Comparison.png")
-# 
-# ggsave(
-#   filename = Path,
-#   plot = plot,
-#   width = 3750,
-#   height = 1833,
-#   units = "px",
-#   dpi = 300,
-#   limitsize = FALSE
-# )
+# Create the Lollipop Chart
+# This is a cleaner alternative to a bar chart
+plot_lollipop <- ggplot(results_df, aes(x = reorder(Model, F1_Score), y = F1_Score)) +
+  geom_segment(aes(xend = reorder(Model, F1_Score), yend = 0), color = grey) +
+  geom_point(aes(color = Model), size = 5, show.legend = FALSE) +
+  geom_text(aes(label = round(F1_Score, 4)), hjust = -0.4, size = 3.5) +
+  coord_flip() + # Flips the chart to be horizontal, which is easier to read
+  scale_y_continuous(limits = c(0, 1), expand = c(0, 0.01)) +
+  labs(title = "Final Model Performance Ranking",
+       subtitle = "Macro F1-Score on the 20% Test Set",
+       x = "",
+       y = "Macro F1-Score") +
+  theme_light() +
+  theme(
+    panel.border = element_blank(),
+    panel.grid.major.y = element_blank(), # Remove horizontal grid lines
+    axis.ticks.y = element_blank() # Remove y-axis ticks
+  )
+
+results_df_formatted <- results_df
+results_df_formatted$F1_Score <- round(results_df_formatted$F1_Score, 4)
+table_grob <- tableGrob(results_df_formatted, rows = NULL, theme = ttheme_minimal())
+
+plot_combined <- grid.arrange(plot_lollipop, table_grob, 
+                              ncol = 1, 
+                              heights = c(2.5, 1), # Give more space to the plot
+                              top = "Overall Model Comparison")
+
+Path <- file.path(Charts_Directory, "06_Combined_Comparison.png")
+ggsave(
+  filename = Path,
+  plot = plot_combined,
+  width = 2500,
+  height = 1800,
+  units = "px",
+  dpi = 300
+)
 
 #==============================================================================#
 #==== 05 - Appendix ===========================================================#
@@ -759,218 +911,180 @@ ggsave(
 
 #==== 05a - Implement the CatBoost Algorithm ==================================#
 
-set.seed(123)
-
-if(Enable_Catboost){
-  
 tryCatch({
-  
-#=======================#
-## Parameters.
-#=======================#
-
-  train_x <- Train[, -which(names(Train) == "quality")]
-  train_y <- Train$quality
-  val_x   <- Validation[, -which(names(Validation) == "quality")]
-  val_y   <- Validation$quality
-  
-  train_pool <- catboost.load_pool(data = train_x, label = train_y)
-  val_pool   <- catboost.load_pool(data = val_x, label = val_y)
-  
-  Final_Train_Val <- rbind(Train, Validation) 
-  
-  final_train_x <- Final_Train_Val[, -which(names(Final_Train_Val) == "quality")]
-  final_train_y <- Final_Train_Val$quality
-  final_train_pool <- catboost.load_pool(data = final_train_x, label = final_train_y)
-  
-  test_x <- Test[, -which(names(Test) == "quality")]
-  test_y <- Test$quality
-  test_pool <- catboost.load_pool(data = test_x, label = test_y)
-  
-  param_grid <- expand.grid(
-    learning_rate = c(0.03, 0.1),
-    depth = c(10, 12, 14, 16),
-    l2_leaf_reg = c(1, 5) 
-  )
-  
-  tuning_results <- param_grid
-  tuning_results$best_iteration <- NA
-  tuning_results$validation_Accuracy <- NA
-  
-#=======================#
-## Main Model.
-#=======================#  
-  
-  print("--- STARTING HYPERPARAMETER TUNING (Classification) ---")
-  for (i in 1:nrow(param_grid)) {
     
-    params <- list(
-      iterations = 2000,
-      loss_function = 'MultiClass',
-      eval_metric = 'Accuracy',
-      train_dir = "my_run_logs",
-      use_best_model = TRUE,
-      early_stopping_rounds = 50,
+#=======================#
+## Parameters & CV Setup.
+#=======================#
+param_grid <- expand.grid(
+learning_rate = c(0.03, 0.1),
+depth = c(10, 12), # Reduced for speed, you can expand this back if needed
+l2_leaf_reg = c(1, 5) )
+
+nfolds <- k_folds
+    
+## Create the fold indices from the main Train set
+folds <- sample(cut(seq(1, nrow(Train)), breaks = nfolds, labels = FALSE))
+    
+## Prepare the final Test pool (can be done once)
+test_x <- Test[, -which(names(Test) == "quality")]
+test_y <- as.numeric(Test$quality) - 3 # CatBoost needs 0-indexed numeric labels
+test_pool <- catboost.load_pool(data = test_x, label = test_y)
+    
+## Setup results dataframe
+tuning_results <- param_grid
+tuning_results$mean_F1 <- NA
+tuning_results$best_iteration <- NA
+    
+#=======================#
+## Main Model Tuning with k-fold Cross-Validation.
+#=======================#  
+    print("--- STARTING CATBOOST TUNING WITH 5-FOLD CROSS-VALIDATION ---")
+    
+    for (i in 1:nrow(param_grid)) {
       
-      learning_rate = param_grid$learning_rate[i],
-      depth = param_grid$depth[i],
-      l2_leaf_reg = param_grid$l2_leaf_reg[i],
+      fold_f1_scores <- c()
+      fold_iterations <- c()
+      
+      for (k in 1:nfolds) {
+        val_indices <- which(folds == k)
+        train_fold <- Train[-val_indices, ]
+        val_fold   <- Train[val_indices, ]
+        
+        # Create data pools for this specific fold
+        train_fold_x <- train_fold[, -which(names(train_fold) == "quality")]
+        train_fold_y <- as.numeric(train_fold$quality) - 3
+        val_fold_x <- val_fold[, -which(names(val_fold) == "quality")]
+        val_fold_y <- as.numeric(val_fold$quality) - 3
+        
+        train_pool_fold <- catboost.load_pool(train_fold_x, label = train_fold_y)
+        val_pool_fold <- catboost.load_pool(val_fold_x, label = val_fold_y)
+        
+        params <- list(
+          iterations = 2000,
+          loss_function = 'MultiClass',
+          eval_metric = 'TotalF1', # Using F1-score for tuning
+          use_best_model = TRUE,
+          early_stopping_rounds = 50,
+          learning_rate = param_grid$learning_rate[i],
+          depth = param_grid$depth[i],
+          l2_leaf_reg = param_grid$l2_leaf_reg[i],
+          logging_level = 'Silent',
+          train_dir = "catboost_logs" # Use a dedicated log dir
+        )
+        
+        model_fold <- catboost.train(learn_pool = train_pool_fold, test_pool = val_pool_fold, params = params)
+        
+        run_metrics <- read.delim(file.path("catboost_logs", "test_error.tsv"))
+        best_idx <- which.max(run_metrics$TotalF1)
+        fold_f1_scores <- c(fold_f1_scores, run_metrics$TotalF1[best_idx])
+        fold_iterations <- c(fold_iterations, run_metrics$iter[best_idx] + 1)
+      }
+      
+      tuning_results$mean_F1[i] <- mean(fold_f1_scores)
+      tuning_results$best_iteration[i] <- ceiling(mean(fold_iterations)) # Use the average best iteration
+      
+      print(paste("Completed run", i, "/", nrow(param_grid), 
+                  "| Avg Best Iter:", tuning_results$best_iteration[i],
+                  "| Mean CV F1-Score:", round(tuning_results$mean_F1[i], 5)))
+    }
+    
+    print("--- TUNING COMPLETE ---")
+    print(tuning_results)
+    
+#=======================#
+## Final Model Training & Assessment.
+#=======================#  
+    best_params_row <- tuning_results[which.max(tuning_results$mean_F1), ]
+    
+    print("--- BEST HYPERPARAMETERS FOUND ---")
+    print(best_params_row)
+    
+    final_train_x <- Train[, -which(names(Train) == "quality")]
+    final_train_y <- as.numeric(Train$quality) - 3
+    final_train_pool <- catboost.load_pool(data = final_train_x, label = final_train_y)
+    
+    final_params <- list(
+      iterations = best_params_row$best_iteration, 
+      loss_function = 'MultiClass',
+      learning_rate = best_params_row$learning_rate,
+      depth = best_params_row$depth,
+      l2_leaf_reg = best_params_row$l2_leaf_reg,
       logging_level = 'Silent'
     )
     
-    model <- catboost.train(
-      learn_pool = train_pool,
-      test_pool = val_pool,
-      params = params
-    )
+    print("--- TRAINING FINAL MODEL ON FULL TRAIN SET ---")
+    final_catboost_model <- catboost.train(learn_pool = final_train_pool, params = final_params)
     
-    ## read in.
-    results_file <- file.path("my_run_logs", "test_error.tsv")
-    run_metrics <- read.delim(results_file, sep = "\t")
+## Evaluate the final model on the unseen Test set
+    catboost_preds_numeric <- catboost.predict(final_catboost_model, test_pool)
+    catboost_preds_factor <- as.factor(catboost_preds_numeric + 3)
     
-    # 3. MAXIMIZE Accuracy
-    best_idx <- which.max(run_metrics$Accuracy)
-    best_accuracy <- run_metrics$Accuracy[best_idx]
-    best_iter_value <- run_metrics$iter[best_idx] + 1
+    catboost_final_f1 <- calculate_macro_f1(actual = Test$quality, predicted = catboost_preds_factor)
     
-    tuning_results$validation_Accuracy[i] <- best_accuracy
-    tuning_results$best_iteration[i] <- best_iter_value 
+    print("--- FINAL CATBOOST ASSESSMENT ---")
+    print(paste("Final CatBoost F1-Score (Test Set):", round(catboost_final_f1, 5)))
     
-    print(paste("Completed run", i, "/", nrow(param_grid), 
-                "| Best Iter:", tuning_results$best_iteration[i],
-                "| Val. Accuracy:", round(tuning_results$validation_Accuracy[i], 5)))
-  }
-  
-  print("--- TUNING COMPLETE ---")
-  print(tuning_results)
-
-#=======================#
-## Final Model Assessment.
-#=======================#  
-
-  best_params_row <- tuning_results[which.max(tuning_results$validation_Accuracy), ]
-  
-  print("--- BEST HYPERPARAMETERS FOUND ---")
-  print(best_params_row)
-  
-  final_params <- list(
-    iterations = best_params_row$best_iteration, 
-    loss_function = 'MultiClass',
-    learning_rate = best_params_row$learning_rate,
-    depth = best_params_row$depth,
-    l2_leaf_reg = best_params_row$l2_leaf_reg,
-    logging_level = 'Silent'
-  )
-  
-  print("--- TRAINING FINAL MODEL ON ALL TRAIN/VAL DATA ---")
-  final_model <- catboost.train(
-    learn_pool = final_train_pool,
-    params = final_params
-  )
-  
-  test_preds <- catboost.predict(final_model, test_pool)
-  print("--- FINAL MODEL EVALUATION ON TEST SET ---")
-    test_rmse <- NA
-    true_labels <- test_y #
-  
-  test_accuracy <- mean(test_preds == true_labels)
-  print(paste("Test Set Accuracy:", round(test_accuracy, 5)))
-
 #=======================#
 ## Visualization.
 #=======================#    
 
-  new_row <- data.frame(
-    Model = "CatBoost",
-    Accuracy = test_accuracy, 
-    RMSE = test_rmse
-  )
-  
-  results_df <- rbind(results_df, new_row)
-  
-  print("--- All Model Results ---")
-  print(results_df)
-  
-  plot_acc <- ggplot(results_df, aes(x = reorder(Model, Accuracy), y = Accuracy)) +
-    geom_bar(stat = "identity", aes(fill = Model), width = 0.7) +
-    geom_text(aes(label = round(Accuracy, 3)), vjust = -0.5) +
-    labs(title = "Final Model Accuracy", x = "Model", y = "Accuracy") +
-    theme_light() +
-    theme(legend.position = "none", plot.title = element_text(hjust = 0.5))
-  
-  Path <- file.path(Charts_Directory, "05b_Accuracy_Comparison_with_CatBoost.png")
-  ggsave(
-    filename = Path,
-    plot = plot_acc,
-    width = 3750,
-    height = 1833,
-    units = "px",
-    dpi = 300,
-    limitsize = FALSE
-  )
-
-  tryCatch({
+#--- Plot 1: Feature Importance ---#
+    tryCatch({
+      importance_data_cb <- as.data.frame(catboost.get_feature_importance(final_catboost_model))
+      importance_data_cb$Variable <- rownames(importance_data_cb)
+      colnames(importance_data_cb)[1] <- "Importance"
+      
+      plot_cb_imp <- ggplot(importance_data_cb, aes(x = reorder(Variable, Importance), y = Importance)) +
+        geom_bar(stat = "identity", fill = blue) +
+        coord_flip() +
+        labs(title = "Feature Importance (CatBoost)",
+             x = "Features", y = "Importance") +
+        theme_light() +
+        theme(plot.title = element_text(hjust = 0.5))
+      
+      Path <- file.path(Charts_Directory, "04i_CatBoost_FeatureImportance.png")
+      ggsave(filename = Path, plot = plot_cb_imp, width = 3750, height = 1833, units = "px", dpi = 300)
+    }, silent = TRUE)
     
-    importance_data_cb <- as.data.frame(catboost.get_feature_importance(final_model))
-    importance_data_cb$Variable <- rownames(importance_data_cb)
-    colnames(importance_data_cb)[1] <- "Importance"
+    #--- Plot 2 & 3: Confusion Matrices (Raw and Normalized) ---#
+    tryCatch({
+      cm_data_raw_cb <- as.data.frame(table(Actual = Test$quality, Predicted = catboost_preds_factor))
+      
+      # Normalized CM
+      cm_percent_cb <- cm_data_raw_cb %>% group_by(Actual) %>% mutate(Percentage = Freq / sum(Freq), Label = paste0(round(Percentage * 100), "%"))
+      plot_cm_normalized_cb <- ggplot(cm_percent_cb, aes(x = Actual, y = Predicted, fill = Percentage)) +
+        geom_tile(color = "white") +
+        scale_fill_gradient(low = "white", high = orange, labels = scales::percent) +
+        geom_text(aes(label = Label), vjust = 1) +
+        labs(title = "Normalized Confusion Matrix (CatBoost)", subtitle = "Rows sum to 100%", x = "Actual Quality", y = "Predicted Quality", fill = "Percentage") +
+        theme_light() +
+        theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), aspect.ratio = 1)
+      
+      Path <- file.path(Charts_Directory, "04j_CatBoost_Normalized_CM.png")
+      ggsave(filename = Path, plot = plot_cm_normalized_cb, width = 2500, height = 2500, units = "px", dpi = 300)
+    }, silent = TRUE)
     
-    plot_cb_imp <- ggplot(importance_data_cb, aes(x = reorder(Variable, Importance), y = Importance)) +
-      geom_bar(stat = "identity", fill = blue) +
-      coord_flip() +
-      labs(title = "Feature Importance (CatBoost Classification)",
-           x = "Features",
-           y = "Importance") +
-      theme_light() +
-      theme(plot.title = element_text(hjust = 0.5))
-    
-    Path <- file.path(Charts_Directory, "04e_CatBoost_FeatureImportance.png")
-    
-    ggsave(
-      filename = Path,
-      plot = plot_cb_imp,
-      width = 3750,
-      height = 1833,
-      units = "px",
-      dpi = 300,
-      limitsize = FALSE
-    )
+    #--- Plot 4: Error Analysis ---#
+    tryCatch({
+      results_df_cb <- Test
+      results_df_cb$Predicted <- catboost_preds_factor
+      misclassified_df_cb <- results_df_cb %>% filter(quality != Predicted)
+      
+      plot_error_analysis_cb <- ggplot(misclassified_df_cb, aes(x = quality, y = Predicted)) +
+        geom_count(aes(color = after_stat(n))) +
+        scale_color_gradient(low = blue, high = red) +
+        labs(title = "Analysis of Misclassifications (CatBoost)", subtitle = "Where are the model's errors concentrated?", x = "Actual Quality", y = "Predicted Quality", size = "Number of Errors") +
+        theme_light() +
+        theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5), aspect.ratio = 1) +
+        guides(color = "none")
+      
+      Path <- file.path(Charts_Directory, "04k_CatBoost_Error_Analysis.png")
+      ggsave(filename = Path, plot = plot_error_analysis_cb, width = 2500, height = 2500, units = "px", dpi = 300)
+    }, silent = TRUE)
     
   }, silent = TRUE)
   
-  
-  tryCatch({
-    
-    cm_data_cb <- as.data.frame(table(Actual = true_labels, Predicted = test_preds))
-    
-    plot_cb_cm <- ggplot(cm_data_cb, aes(x = Actual, y = Predicted, fill = Freq)) +
-      geom_tile(color = "white") +
-      scale_fill_gradient(low = "white", high = blue) +
-      geom_text(aes(label = Freq), vjust = 1) +
-      labs(title = "CatBoost Confusion Matrix",
-           x = "Actual Quality",
-           y = "Predicted Quality",
-           fill = "Frequency") +
-      theme_light() +
-      theme(plot.title = element_text(hjust = 0.5))
-    
-    Path <- file.path(Charts_Directory, "04f_CatBoost_ConfusionMatrix.png")
-    
-    ggsave(
-      filename = Path,
-      plot = plot_cb_cm,
-      width = 3750,
-      height = 1833,
-      units = "px",
-      dpi = 300,
-      limitsize = FALSE
-    )
-    
-  }, silent = TRUE)
-  
-}, silent = TRUE)
-
-}
 
 #==============================================================================#
 #==============================================================================#

@@ -202,23 +202,31 @@ tools, like stratified sampling.
 
 \chapter{Regularized Linear Models}
 
-\section{Ridge}
+\section{Multinomial Logistic Regression (Lasso \& Ridge)}
 
-Ridge regression is a regularized linear model that addresses multicollinearity and overfitting by adding an $L_2$ penalty to the ordinary least squares loss function. This penalty shrinks the coefficients towards zero but never exactly to zero, retaining all features in the final model.
+\textbf{Implementation:} \texttt{glmnet} with \texttt{family = "multinomial"}
 
-The optimization problem for Ridge regression is:
+\subsubsection*{What is being optimized?}
+The model minimizes the \textbf{Multinomial Negative Log-Likelihood} (also known as Cross-Entropy Loss), combined with a regularization term. The objective function to minimize is:
+\[
+-\frac{1}{N} \sum_{i=1}^{N} \sum_{k=1}^{K} y_{ik} \log(p_{ik}) + \lambda \cdot \text{Penalty}(\beta)
+\]
+Where:
+\begin{itemize}
+    \item $N$ is the number of observations.
+    \item $K$ is the number of classes (wine quality 3, 4, \dots, 9).
+    \item $y_{ik}$ is an indicator (1 if observation $i$ is in class $k$, 0 otherwise).
+    \item $p_{ik}$ is the predicted probability that observation $i$ is in class $k$.
+    \item $\lambda$ is the regularization parameter (tuned via cross-validation).
+    \item \textbf{Lasso Penalty:} $\sum |\beta_j|$ (pushes coefficients to exactly zero).
+    \item \textbf{Ridge Penalty:} $\sum \beta_j^2$ (shrinks coefficients towards zero).
+\end{itemize}
 
-$$\hat{\beta}_{ridge} = \arg \min_{\beta} \left\{ \sum_{i=1}^{N} (y_i - \beta_0 - \sum_{j=1}^{p} x_{ij}\beta_j)^2 + \lambda \sum_{j=1}^{p} \beta_j^2 \right\}$$
-
-Where $\lambda \ge 0$ is a tuning parameter that controls the strength of the shrinkage.
-
-\section{Lasso}
-
-Lasso (Least Absolute Shrinkage and Selection Operator) is another regularized linear model, but it uses an $L_1$ penalty. Unlike Ridge, the $L_1$ penalty can shrink some coefficients exactly to zero, effectively performing automatic feature selection and producing sparse models.
-
-The optimization problem for Lasso regression is:
-
-$$\hat{\beta}_{lasso} = \arg \min_{\beta} \left\{ \frac{1}{2N} \sum_{i=1}^{N} (y_i - \beta_0 - \sum_{j=1}^{p} x_{ij}\beta_j)^2 + \lambda \sum_{j=1}^{p} |\beta_j| \right\}$$
+\subsubsection*{How it works}
+\begin{itemize}
+    \item \textbf{Training:} The \texttt{glmnet} algorithm uses coordinate descent to find the coefficients ($\beta$) that minimize this joint loss function for a fixed $\lambda$.
+    \item \textbf{Tuning:} We test multiple $\lambda$ values. For each, we calculate the \textbf{Accuracy} on the validation set. We select the $\lambda$ that \textbf{maximizes Validation Accuracy}.
+\end{itemize}
 
 %==== Chapter 4: Decision Trees ===============================================%
 
@@ -236,27 +244,32 @@ High Variance: As a result, if you slightly change the training data (e.g., add 
 
 \section{Random Forest}
 
-Random Forest is an ensemble learning method that builds a large collection of de-correlated decision trees. It uses bagging (training each tree on a random bootstrap sample of the data) and feature randomness (considering only a random subset of features for each split). The final prediction for regression is the average of the predictions from all individual trees.
+\textbf{Implementation:} \texttt{randomForest} with a factor response variable.
 
-For regression, each individual tree $T_b$ is built by recursively splitting regions to minimize the Mean Squared Error (MSE) in each resulting node:
+Random Forest does not strictly "minimize" a global loss function like regression models. Instead, it minimizes \textbf{impurity} at every split in every tree. For classification, the standard impurity measure is the \textbf{Gini Index}:
+\[
+Gini(t) = 1 - \sum_{k=1}^{K} (p_{tk})^2
+\]
+Where $p_{tk}$ is the proportion of training samples in node $t$ that belong to class $k$.
 
-$$\text{Minimize} \sum_{R_j} \sum_{x_i \in R_j} (y_i - \hat{c}_j)^2$$
-
-Where $\hat{c}_j$ is the average value of the target variable for observations falling into region $R_j$.
+\begin{itemize}
+    \item \textbf{Training:} Each individual tree tries to find splits that \textbf{maximize the decrease in Gini Impurity}. A split that perfectly separates classes has a Gini index of 0.
+    \item \textbf{Tuning:} We tune the \texttt{mtry} hyperparameter. For each \texttt{mtry} value, we train a forest and evaluate it on the validation set. We select the \texttt{mtry} that \textbf{maximizes Validation Accuracy}.
+\end{itemize}
 
 \section{Gradient Boosting}
 
-Gradient Boosting Machines (GBM) also build an ensemble of decision trees, but they do so sequentially rather than in parallel. Each new tree is trained to predict the pseudo-residuals (errors) of the previous ensemble of trees, effectively correcting the mistakes of its predecessors.
+\textbf{Implementation:} \texttt{gbm} with \texttt{distribution = "multinomial"}
 
-At each step $m$, a new tree $h_m(x)$ is fitted to the negative gradient of the loss function (which, for squared error loss, is just the residual):
+GBM explicitly minimizes the \textbf{Multinomial Negative Log-Likelihood} (Multinomial Deviance), the same core loss function as standard logistic regression, but it does so sequentially.
+\[
+Loss = - \sum_{i=1}^{N} \sum_{k=1}^{K} y_{ik} \log(p_{ik})
+\]
 
-$$F_m(x) = F_{m-1}(x) + \nu \cdot h_m(x)$$
-
-Where $F_m(x)$ is the updated model, $\nu$ is the learning rate (shrinkage) parameter, and $h_m(x)$ is the new tree that minimizes the loss:
-
-$$h_m = \arg \min_{h} \sum_{i=1}^{N} L(y_i, F_{m-1}(x_i) + h(x_i))$$
-
-For our regression task, we use the squared error loss function $L(y, F(x)) = (y - F(x))^2$.
+\begin{itemize}
+    \item \textbf{Training:} GBM builds trees sequentially. Each new tree is trained to predict the \textbf{negative gradient} of this loss function with respect to the current model's predictions. Effectively, each new tree tries to correct the probabilistic errors made by the ensemble so far.
+    \item \textbf{Tuning:} We use K-fold Cross-Validation to tune the number of trees ($M$) and interaction depth ($J$). We select the combination that \textbf{minimizes the CV Multinomial Deviance}.
+\end{itemize}
 
 %==== Chapter 5: Additional Models ============================================%
 
@@ -266,39 +279,14 @@ For our regression task, we use the squared error loss function $L(y, F(x)) = (y
 
 CatBoost's primary advantages come from two novel techniques that solve common problems in standard gradient boosting: **target leakage** and **prediction shift**.
 
-\subsection{Ordered Boosting (Combating Overfitting)}
+\textbf{Implementation:} \texttt{catboost} with \texttt{loss\_function = 'MultiClass'}
 
-In standard GBDT, the gradient (residual) for each data point is calculated using a model that was trained on that same data point. This "target leakage" leads the model to overfit the training data.
+CatBoost minimizes the \textbf{MultiClass} loss, which is its implementation of the negative log-likelihood for multiclass problems (similar to GBM's deviance).
 
-CatBoost uses **Ordered Boosting**. It works as follows:
 \begin{itemize}
-    \item A random permutation (order) of the training data is generated.
-    \item To calculate the gradient for any given sample $x_i$, CatBoost trains a temporary model $M_i$ using only the samples that appeared before it in the permutation.
-    \item The gradient for $x_i$ is then calculated using this "unbiased" model $M_i$, which has never seen the target value $Y_i$.
+    \item \textbf{Training:} Like standard GBM, it builds trees sequentially to minimize this loss. However, it uses \textbf{Ordered Boosting} to combat prediction shift and \textbf{Ordered Target Statistics} to handle categorical features (though we didn't have any in this specific dataset after pre-processing).
+    \item \textbf{Tuning:} We explicitly set the \texttt{eval\_metric = 'Accuracy'}. During hyperparameter tuning, we select the best parameters (learning rate, depth, L2 regularization) that \textbf{maximize Validation Accuracy}.
 \end{itemize}
-This process ensures that the target values used to calculate gradients are always "unseen" by the model being used, which significantly reduces overfitting.
-
-\subsection{Ordered Target Statistics (Handling Categorical Data)}
-
-Converting categorical features to numbers is difficult. Methods like "target encoding" (replacing a category with the average target value of all samples in that category) are powerful but suffer from extreme target leakage. CatBoost uses **Ordered Target Statistics (TS)**, which is a target encoding method that works in conjunction with Ordered Boosting.
-
-Instead of using the entire dataset, the target statistic for a sample $x_k$ is calculated using only the target values $Y_i$ from the samples $i$ that came before it in the random permutation.
-
-More formally, the value for a categorical feature $j$ in sample $k$ is replaced by:
-\begin{equation*}
-\text{OrderedTS}(k, j) = \frac{\sum_{i=1}^{k-1} \llbracket x_i^j = x_k^j \rrbracket \cdot Y_i + a \cdot P}{\sum_{i=1}^{k-1} \llbracket x_i^j = x_k^j \rrbracket + a}
-\end{equation*}
-Where:
-\begin{itemize}
-    \item $\llbracket \dots \rrbracket$ is an indicator function (1 if the category values match, 0 otherwise).
-    \item $Y_i$ is the target value of a previous sample $i$.
-    \item $P$ is a prior (a global average target value, used for smoothing).
-    \item $a$ is a smoothing parameter (weight of the prior, typically $> 0$).
-\end{itemize}
-This method provides a robust numerical representation of the category while preventing the model from overfitting to its own target variable.
-
-\subsection{Symmetric Trees}
-CatBoost builds **symmetric** (or **oblivious**) **decision trees**. This means that all nodes at the same depth level use the exact same feature and split value. This structure acts as a form of regularization (preventing complex, overfitted trees) and allows for highly efficient, vectorized prediction on CPUs.
 
 %==== Chapter 6: Results ======================================================%
 
