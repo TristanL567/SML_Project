@@ -25,7 +25,8 @@ packages <- c("here", "dplyr", "tidyr",
               "glmnet",
               "randomForest", "gbm",
               "remotes",
-              "gridExtra")
+              "gridExtra",
+              "scorecard")
 
 for(i in 1:length(packages)){
   package_name <- packages[i]
@@ -96,6 +97,11 @@ grey <- "#708090"
 orange <- "#F37021"
 red <- "#B22222"
 
+height <- 1833
+width <- 3750
+
+## Data Sampling.
+set.seed(123)
 
 #==============================================================================#
 #==== 02 - Data ===============================================================#
@@ -163,7 +169,19 @@ ggsave(
   limitsize = FALSE
 )
 
+## log transform.
 
+df_long_log <- df_long
+df_long_log$value <- log(df_long_log$value)
+
+# plot <- ggplot(df_long_log, aes(x = value)) +
+#   geom_histogram(fill = blue, color = "white", bins = 30) +
+#   facet_wrap(~feature, scales = "free", ncol = 3) +
+#   theme_minimal() +
+#   theme(strip.text = element_text(face = "bold", size = 10)) +
+#   labs(title = "",
+#        x = "Value",
+#        y = "Count")
 
 ## Do not log-transform residual_sugar as it will contribute to even more unbalancing.
 hist(data$residual_sugar)
@@ -185,19 +203,82 @@ Skewness <- apply(as.matrix(predictors), MARGIN = 2, FUN = skew)
 #=======================#
 boxplot(data$residual_sugar)
 
-#=======================#
-## Standardize the features.
-#=======================#
-scaled_predictors <- data.frame(scale(predictors))
-data_standardized <- cbind(scaled_predictors, data$quality)
-colnames(data_standardized) <- colnames(data)
 
-Variance_standardized <- apply(as.matrix(data_standardized), MARGIN = 2, FUN = var)
+#==== 02c - Multicollinearity and IV ==========================================#
 
-#==== 02c - Multicollinearity =================================================#
+## ======================= ##
+## Informational Value.
+## ======================= ##
+data_iv <- data %>%
+  mutate(quality = ifelse(quality >= 6, 1, 0))
+
+## Tells us how good a feature seperates between NoDefault (y=0) and Default (y=1).
+iv_summary <- iv(data_iv, y = "quality")
+print(iv_summary %>% arrange(desc(info_value)))
+
+## Plot the informational value.
+
+iv_summary <- iv_summary %>%
+  mutate(
+    power_category = case_when(
+      info_value > 0.5   ~ "Very Strong",
+      info_value >= 0.3  ~ "Strong",
+      info_value >= 0.1  ~ "Medium",
+      info_value >= 0.02 ~ "Weak",
+      TRUE               ~ "Useless"
+    ),
+    # Convert to a factor to control the order in the legend
+    power_category = factor(power_category, 
+                            levels = c("Very Strong", "Strong", "Medium", "Weak", "Useless"))
+  )
+
+# 3. Create the ggplot visualization
+plot_IV <- ggplot(iv_summary, aes(x = info_value, y = reorder(variable, info_value))) +
+  geom_col(aes(fill = power_category)) +
+  geom_text(aes(label = round(info_value, 3)), hjust = -0.1, size = 3.5) +
+  geom_vline(xintercept = c(0.02, 0.1, 0.3, 0.5), linetype = "dashed", color = "gray50") +
+  annotate("text", x = 0.02, y = Inf, label = "Weak", vjust = -0.5, hjust = -0.1, size = 3, color = "gray20") +
+  annotate("text", x = 0.1, y = Inf, label = "Medium", vjust = -0.5, hjust = -0.1, size = 3, color = "gray20") +
+  annotate("text", x = 0.3, y = Inf, label = "Strong", vjust = -0.5, hjust = -0.1, size = 3, color = "gray20") +
+  annotate("text", x = 0.5, y = Inf, label = "Very strong", vjust = -0.5, hjust = -0.1, size = 3, color = "gray20") +
+  labs(
+    title = "",
+    subtitle = "",
+    x = "Information Value",
+    y = "",
+    fill = "Predictive Power"
+  ) +
+  
+  # Manually set colors for the categories
+  scale_fill_manual(values = c(
+    "Very Strong" = "#d53e4f", 
+    "Strong" = "#f46d43", 
+    "Medium" = "#fdae61", 
+    "Weak" = "#fee08b", 
+    "Useless" = "#e6f598"
+  )) +
+  
+  scale_x_continuous(limits = c(0, max(iv_summary$info_value) * 1.1)) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+
+Path <- file.path(Charts_Directory, "01b_IV_per_feature.png")
+ggsave(
+  filename = Path,
+  plot = plot_IV,
+  width = width,
+  height = height,
+  units = "px",
+  dpi = 300,
+  limitsize = FALSE
+)
+
+## ======================= ##
+## Multicollinearity.
+## ======================= ##
 
 ## Parameters.
-Path <- file.path(Charts_Directory, "01_Correlation_Plot.png")
+Path <- file.path(Charts_Directory, "01a_Correlation_Plot.png")
 
 ## Main Code.
 cor_matrix <- cor(scaled_predictors[,])
@@ -228,10 +309,82 @@ ggsave(
   limitsize = FALSE
 )
 
-#==== 02d - Splitting the dataset =============================================#
-set.seed(123)
+## We no longer need a separate 'Validation' set.
+## Cross-validation on the 'Train' set will replace it.
 
-train_index <- sample(1:nrow(data_standardized), size = 0.80 * nrow(data_standardized))
+## Now we are done preparing the data.
+## - Standardized the features (discovered bimodiality in two datasets, points to decision trees).
+## - Detected skewness and differences in the variation/variance.
+## - Looked at multicollinearity. Most variables show a high correlation with eachother.
+## - Dependent variable is set up as a factor. We are working on a classification task.
+## - Data is split into Train and Test sets for a robust CV workflow.
+
+#==============================================================================#
+#==== 03 - Feature Selection & Engineering and Data preparation ===============#
+#==============================================================================#
+
+## ======================= ##
+## Feature selection.
+## ======================= ##
+
+
+## ======================= ##
+## Feature engineering.
+## ======================= ##
+## Add a dummy for red and white wines.
+
+features_for_clustering <- c("total_sulfur_dioxide", "chlorides", "volatile_acidity")
+data_for_clustering <- data[features_for_clustering]
+
+scaled_data <- scale(data_for_clustering)
+
+# -- Step 3: Apply K-Means clustering --
+# We set centers=2 because we are looking for two groups (red and white).
+# nstart=25 runs the algorithm 25 times with different starting points to find a stable solution.
+# set.seed() makes the result reproducible.
+kmeans_result <- kmeans(scaled_data, centers = 2, nstart = 25)
+data$cluster <- kmeans_result$cluster
+cluster_summary <- data %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_total_sulfur = mean(total_sulfur_dioxide),
+    mean_chlorides = mean(chlorides),
+    mean_volatile_acidity = mean(volatile_acidity),
+    count = n()
+  )
+
+print(cluster_summary)
+
+##
+white_wine_cluster_id <- cluster_summary %>%
+  filter(mean_total_sulfur == max(mean_total_sulfur)) %>%
+  pull(cluster)
+
+data <- data %>%
+  mutate(is_white = ifelse(cluster == white_wine_cluster_id, 1, 0))
+data <- data %>%
+  select(-cluster)
+
+print(head(data))
+cat("\nCounts of inferred wine types:\n")
+print(table(data$is_white))
+
+
+## ======================= ##
+## Standardization.
+## ======================= ##
+
+scaled_predictors <- data.frame(scale(predictors))
+data_standardized <- cbind(scaled_predictors, data$quality)
+colnames(data_standardized) <- colnames(data)
+
+Variance_standardized <- apply(as.matrix(data_standardized), MARGIN = 2, FUN = var)
+
+## ======================= ##
+## Data splitting (70/30).
+## ======================= ##
+
+train_index <- sample(1:nrow(data_standardized), size = 0.70 * nrow(data_standardized))
 
 Train <- data_standardized[train_index, ]
 Test  <- data_standardized[-train_index, ]
@@ -246,8 +399,9 @@ Test  <- data_standardized[-train_index, ]
 ## - Dependent variable is set up as a factor. We are working on a classification task.
 ## - Data is split into Train and Test sets for a robust CV workflow.
 
+
 #==============================================================================#
-#==== 03 - Analysis ===========================================================#
+#==== 04 - Analysis ===========================================================#
 #==============================================================================#
 
 #=======================#

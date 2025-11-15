@@ -108,6 +108,7 @@ density & Density (related to alcohol/sugar) & float64 \\
 pH & pH level (acidity indicator) & float64 \\
 sulphates & Sulphates additive amount & float64 \\
 alcohol & Alcohol percentage & float64 \\
+is\_white & Binary indicator for wine type (1 = White, 0 = Red) & int64 \\
 quality & Target: Quality score (3-9) & int64 \\
 \bottomrule
 \end{tabular}
@@ -236,9 +237,9 @@ Where:
 
 A conventional decision tree (like CART) is a powerful model, but it has a major flaw: it's greedy and prone to overfitting.
 
-Greedy Approach: At each node, the tree scans all available features and all possible split points to find the single best split that most improves the model (e.g., minimizes Gini Impurity or, in your regression_case, Residual Sum of Squares).
-
-Overfitting: Because it's greedy and tries to find the perfect split every time, it will continue splitting until it has perfectly (or near-perfectly) memorized the training data. This creates a very deep, complex tree that captures all the noise and quirks of the training set.
+% Greedy Approach: At each node, the tree scans all available features and all possible split points to find the single best split that most improves the model (e.g., minimizes Gini Impurity or, in your regression_case, Residual Sum of Squares).
+% 
+% Overfitting: Because it's greedy and tries to find the perfect split every time, it will continue splitting until it has perfectly (or near-perfectly) memorized the training data. This creates a very deep, complex tree that captures all the noise and quirks of the training set.
 
 High Variance: As a result, if you slightly change the training data (e.g., add or remove a few rows), you can get a completely different tree. This instability is called high variance.
 

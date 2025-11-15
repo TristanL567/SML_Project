@@ -149,6 +149,7 @@ density & Density (related to alcohol/sugar) & float64 \\
 pH & pH level (acidity indicator) & float64 \\
 sulphates & Sulphates additive amount & float64 \\
 alcohol & Alcohol percentage & float64 \\
+is\_white & Binary indicator for wine type (1 = White, 0 = Red) & int64 \\
 quality & Target: Quality score (3-9) & int64 \\
 \bottomrule
 \end{tabular}
@@ -201,91 +202,116 @@ tools, like stratified sampling.
 
 \chapter{Loss-function}
 
-\section{Root Mean Squared Error (RMSE)}
+%%% WILL BE CHANGED.
 
-For this project, we decided to use root mean squared error (RMSE) as the key
-loss metric for both model validation and final performance assessment in the test
-set. We perform the following minimization:
-
-\[
-RMSE = \sqrt{\frac{1}{N}\sum_{i=1}^{N} (y_i - \hat{y}_i)^2}
-\]
-
-Where:
-
-* $y_i$ is the actual quality score (e.g., 6).
-* $\hat{y}_i$ is the predicted score (e.g., 5.8).
-* $N$ is the number of observations.
-
-Whilst wine quality is an ordinal variable, a standard multi-class classification
-problem (using e.g. accuracy) is suboptimal. Firstly, accuracy would ignore
-ordinality. Predicting a quality of 3 for a true quality of 8 is penalized the same as predicting
-a 7, even though 7 is much better than a 3.
-
-RMSE also treats the target as a continous variable. If our model predicts a
-59 for a true 6, it has a very small error, whereas 5.1 would result in a bigger
-error. This rewards models that get close to the true value, even though
-we can not observe a continous value (rather a discrete one).
-
-RMSE is also easier to interprete as the target variable. An RMSE of 0.7
-would mean, on average, that our model's prediction are about 0.7
-quality points away from the actual score.
-
-\section{RMSE vs MSE}
-We chose RMSE, because it scales back to the original units of our target variable.
-MSE is difficult to interpret by itself. An RMSE of 0.7 means, "on average, our model's prediction 
-is about 0.7 points away from the true wine quality rating." We use a metric
-that matches the scale of the actual data.
+% \section{Root Mean Squared Error (RMSE)}
+% 
+% For this project, we decided to use root mean squared error (RMSE) as the key
+% loss metric for both model validation and final performance assessment in the test
+% set. We perform the following minimization:
+% 
+% \[
+% RMSE = \sqrt{\frac{1}{N}\sum_{i=1}^{N} (y_i - \hat{y}_i)^2}
+% \]
+% 
+% Where:
+% 
+% * $y_i$ is the actual quality score (e.g., 6).
+% * $\hat{y}_i$ is the predicted score (e.g., 5.8).
+% * $N$ is the number of observations.
+% 
+% Whilst wine quality is an ordinal variable, a standard multi-class classification
+% problem (using e.g. accuracy) is suboptimal. Firstly, accuracy would ignore
+% ordinality. Predicting a quality of 3 for a true quality of 8 is penalized the same as predicting
+% a 7, even though 7 is much better than a 3.
+% 
+% RMSE also treats the target as a continous variable. If our model predicts a
+% 59 for a true 6, it has a very small error, whereas 5.1 would result in a bigger
+% error. This rewards models that get close to the true value, even though
+% we can not observe a continous value (rather a discrete one).
+% 
+% RMSE is also easier to interprete as the target variable. An RMSE of 0.7
+% would mean, on average, that our model's prediction are about 0.7
+% quality points away from the actual score.
+% 
+% \section{RMSE vs MSE}
+% We chose RMSE, because it scales back to the original units of our target variable.
+% MSE is difficult to interpret by itself. An RMSE of 0.7 means, "on average, our model's prediction 
+% is about 0.7 points away from the true wine quality rating." We use a metric
+% that matches the scale of the actual data.
 
 %==== Chapter 3: Regularized LMs ==============================================%
 
 \chapter{Regularized Linear Models}
 
-\section{Ridge}
+\section{Multinomial Logistic Regression (Lasso \& Ridge)}
 
-Ridge regression is a regularized linear model that addresses multicollinearity and overfitting by adding an $L_2$ penalty to the ordinary least squares loss function. This penalty shrinks the coefficients towards zero but never exactly to zero, retaining all features in the final model.
+\textbf{Implementation:} \texttt{glmnet} with \texttt{family = "multinomial"}
 
-The optimization problem for Ridge regression is:
+\subsubsection*{What is being optimized?}
+The model minimizes the \textbf{Multinomial Negative Log-Likelihood} (also known as Cross-Entropy Loss), combined with a regularization term. The objective function to minimize is:
+\[
+-\frac{1}{N} \sum_{i=1}^{N} \sum_{k=1}^{K} y_{ik} \log(p_{ik}) + \lambda \cdot \text{Penalty}(\beta)
+\]
+Where:
+\begin{itemize}
+    \item $N$ is the number of observations.
+    \item $K$ is the number of classes (wine quality 3, 4, \dots, 9).
+    \item $y_{ik}$ is an indicator (1 if observation $i$ is in class $k$, 0 otherwise).
+    \item $p_{ik}$ is the predicted probability that observation $i$ is in class $k$.
+    \item $\lambda$ is the regularization parameter (tuned via cross-validation).
+    \item \textbf{Lasso Penalty:} $\sum |\beta_j|$ (pushes coefficients to exactly zero).
+    \item \textbf{Ridge Penalty:} $\sum \beta_j^2$ (shrinks coefficients towards zero).
+\end{itemize}
 
-$$\hat{\beta}_{ridge} = \arg \min_{\beta} \left\{ \sum_{i=1}^{N} (y_i - \beta_0 - \sum_{j=1}^{p} x_{ij}\beta_j)^2 + \lambda \sum_{j=1}^{p} \beta_j^2 \right\}$$
-
-Where $\lambda \ge 0$ is a tuning parameter that controls the strength of the shrinkage.
-
-\section{Lasso}
-
-Lasso (Least Absolute Shrinkage and Selection Operator) is another regularized linear model, but it uses an $L_1$ penalty. Unlike Ridge, the $L_1$ penalty can shrink some coefficients exactly to zero, effectively performing automatic feature selection and producing sparse models.
-
-The optimization problem for Lasso regression is:
-
-$$\hat{\beta}_{lasso} = \arg \min_{\beta} \left\{ \frac{1}{2N} \sum_{i=1}^{N} (y_i - \beta_0 - \sum_{j=1}^{p} x_{ij}\beta_j)^2 + \lambda \sum_{j=1}^{p} |\beta_j| \right\}$$
+\subsubsection*{How it works}
+\begin{itemize}
+    \item \textbf{Training:} The \texttt{glmnet} algorithm uses coordinate descent to find the coefficients ($\beta$) that minimize this joint loss function for a fixed $\lambda$.
+    \item \textbf{Tuning:} We test multiple $\lambda$ values. For each, we calculate the \textbf{Accuracy} on the validation set. We select the $\lambda$ that \textbf{maximizes Validation Accuracy}.
+\end{itemize}
 
 %==== Chapter 4: Decision Trees ===============================================%
 
 \chapter{Decision Trees}
 
+\section{General Decision Trees}
+
+A conventional decision tree (like CART) is a powerful model, but it has a major flaw: it's greedy and prone to overfitting.
+
+% Greedy Approach: At each node, the tree scans all available features and all possible split points to find the single best split that most improves the model (e.g., minimizes Gini Impurity or, in your regression_case, Residual Sum of Squares).
+% 
+% Overfitting: Because it's greedy and tries to find the perfect split every time, it will continue splitting until it has perfectly (or near-perfectly) memorized the training data. This creates a very deep, complex tree that captures all the noise and quirks of the training set.
+
+High Variance: As a result, if you slightly change the training data (e.g., add or remove a few rows), you can get a completely different tree. This instability is called high variance.
+
 \section{Random Forest}
 
-Random Forest is an ensemble learning method that builds a large collection of de-correlated decision trees. It uses bagging (training each tree on a random bootstrap sample of the data) and feature randomness (considering only a random subset of features for each split). The final prediction for regression is the average of the predictions from all individual trees.
+\textbf{Implementation:} \texttt{randomForest} with a factor response variable.
 
-For regression, each individual tree $T_b$ is built by recursively splitting regions to minimize the Mean Squared Error (MSE) in each resulting node:
+Random Forest does not strictly "minimize" a global loss function like regression models. Instead, it minimizes \textbf{impurity} at every split in every tree. For classification, the standard impurity measure is the \textbf{Gini Index}:
+\[
+Gini(t) = 1 - \sum_{k=1}^{K} (p_{tk})^2
+\]
+Where $p_{tk}$ is the proportion of training samples in node $t$ that belong to class $k$.
 
-$$\text{Minimize} \sum_{R_j} \sum_{x_i \in R_j} (y_i - \hat{c}_j)^2$$
-
-Where $\hat{c}_j$ is the average value of the target variable for observations falling into region $R_j$.
+\begin{itemize}
+    \item \textbf{Training:} Each individual tree tries to find splits that \textbf{maximize the decrease in Gini Impurity}. A split that perfectly separates classes has a Gini index of 0.
+    \item \textbf{Tuning:} We tune the \texttt{mtry} hyperparameter. For each \texttt{mtry} value, we train a forest and evaluate it on the validation set. We select the \texttt{mtry} that \textbf{maximizes Validation Accuracy}.
+\end{itemize}
 
 \section{Gradient Boosting}
 
-Gradient Boosting Machines (GBM) also build an ensemble of decision trees, but they do so sequentially rather than in parallel. Each new tree is trained to predict the pseudo-residuals (errors) of the previous ensemble of trees, effectively correcting the mistakes of its predecessors.
+\textbf{Implementation:} \texttt{gbm} with \texttt{distribution = "multinomial"}
 
-At each step $m$, a new tree $h_m(x)$ is fitted to the negative gradient of the loss function (which, for squared error loss, is just the residual):
+GBM explicitly minimizes the \textbf{Multinomial Negative Log-Likelihood} (Multinomial Deviance), the same core loss function as standard logistic regression, but it does so sequentially.
+\[
+Loss = - \sum_{i=1}^{N} \sum_{k=1}^{K} y_{ik} \log(p_{ik})
+\]
 
-$$F_m(x) = F_{m-1}(x) + \nu \cdot h_m(x)$$
-
-Where $F_m(x)$ is the updated model, $\nu$ is the learning rate (shrinkage) parameter, and $h_m(x)$ is the new tree that minimizes the loss:
-
-$$h_m = \arg \min_{h} \sum_{i=1}^{N} L(y_i, F_{m-1}(x_i) + h(x_i))$$
-
-For our regression task, we use the squared error loss function $L(y, F(x)) = (y - F(x))^2$.
+\begin{itemize}
+    \item \textbf{Training:} GBM builds trees sequentially. Each new tree is trained to predict the \textbf{negative gradient} of this loss function with respect to the current model's predictions. Effectively, each new tree tries to correct the probabilistic errors made by the ensemble so far.
+    \item \textbf{Tuning:} We use K-fold Cross-Validation to tune the number of trees ($M$) and interaction depth ($J$). We select the combination that \textbf{minimizes the CV Multinomial Deviance}.
+\end{itemize}
 
 %==== Chapter 5: Additional Models ============================================%
 
@@ -293,11 +319,22 @@ For our regression task, we use the squared error loss function $L(y, F(x)) = (y
 
 \section{CatBoost}
 
+CatBoost's primary advantages come from two novel techniques that solve common problems in standard gradient boosting: **target leakage** and **prediction shift**.
+
+\textbf{Implementation:} \texttt{catboost} with \texttt{loss\_function = 'MultiClass'}
+
+CatBoost minimizes the \textbf{MultiClass} loss, which is its implementation of the negative log-likelihood for multiclass problems (similar to GBM's deviance).
+
+\begin{itemize}
+    \item \textbf{Training:} Like standard GBM, it builds trees sequentially to minimize this loss. However, it uses \textbf{Ordered Boosting} to combat prediction shift and \textbf{Ordered Target Statistics} to handle categorical features (though we didn't have any in this specific dataset after pre-processing).
+    \item \textbf{Tuning:} We explicitly set the \texttt{eval\_metric = 'Accuracy'}. During hyperparameter tuning, we select the best parameters (learning rate, depth, L2 regularization) that \textbf{maximize Validation Accuracy}.
+\end{itemize}
+
 %==== Chapter 6: Results ======================================================%
 
 \chapter{Results}
 
-\section{CatBoost}
+
 
 
 %==== Anhang ==================================================================%
