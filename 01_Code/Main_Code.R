@@ -1141,6 +1141,123 @@ ggsave(
 #==== 05 - Appendix ===========================================================#
 #==============================================================================#
 
+############ NEW ###############################################################
+
+tryCatch({
+  
+  #=======================#
+  ## Parameters & Data Prep
+  #=======================#
+  # --- CHANGE: Expand the grid to include more regularization ---
+  param_grid_cb <- expand.grid(
+    learning_rate = c(0.03, 0.1),
+    depth = c(8, 10, 12),
+    l2_leaf_reg = c(1, 5),
+    bagging_temperature = c(0.4, 0.7) # Add subsampling parameter
+  )
+  
+  # Prepare the full training and test pools once
+  train_x <- Train[, -which(names(Train) == "quality")]
+  train_y <- as.numeric(Train$quality) - 3
+  train_pool <- catboost.load_pool(data = train_x, label = train_y)
+  
+  test_x <- Test[, -which(names(Test) == "quality")]
+  test_y <- as.numeric(Test$quality) - 3
+  test_pool <- catboost.load_pool(data = test_x, label = test_y)
+  
+  # Setup results dataframe
+  tuning_results <- param_grid_cb
+  tuning_results$mean_F1 <- NA
+  tuning_results$best_iteration <- NA
+  
+  #=======================#
+  ## Main Model Tuning with catboost.cv
+  #=======================#  
+  print("--- STARTING CATBOOST TUNING WITH catboost.cv ---")
+  
+  for (i in 1:nrow(param_grid_cb)) {
+    
+    # Set up parameters for this run
+    params <- list(
+      iterations = 2000,
+      loss_function = 'MultiClass',
+      eval_metric = 'TotalF1',
+      use_best_model = TRUE, # This is implicitly handled by cv, but good to be explicit
+      early_stopping_rounds = 50,
+      learning_rate = param_grid_cb$learning_rate[i],
+      depth = param_grid_cb$depth[i],
+      l2_leaf_reg = param_grid_cb$l2_leaf_reg[i],
+      bagging_temperature = param_grid_cb$bagging_temperature[i],
+      logging_level = 'Silent'
+    )
+    
+    # --- CHANGE: Use the built-in catboost.cv function ---
+    # It automatically handles the k-fold splitting and metric averaging.
+    # We use a custom fold setup to ensure we use the same folds as other models.
+    set.seed(123)
+    cv_results <- catboost.cv(
+      pool = train_pool,
+      params = params,
+      folds = folds # Provide your pre-generated fold indices
+    )
+    
+    # Extract the best results
+    best_iter_index <- which.max(cv_results$test_TotalF1_avg)
+    mean_f1_score <- cv_results$test_TotalF1_avg[best_iter_index]
+    best_iteration_count <- best_iter_index
+    
+    tuning_results$mean_F1[i] <- mean_f1_score
+    tuning_results$best_iteration[i] <- best_iteration_count
+    
+    print(paste0("Completed run ", i, "/", nrow(param_grid_cb), 
+                 " | Avg Best Iter: ", best_iteration_count,
+                 " | Mean CV F1-Score: ", round(mean_f1_score, 5)))
+  }
+  
+  print("--- TUNING COMPLETE ---")
+  print(tuning_results[order(tuning_results$mean_F1, decreasing = TRUE), ])
+  
+  #=======================#
+  ## Final Model Training & Assessment
+  #=======================#  
+  best_params_row <- tuning_results[which.max(tuning_results$mean_F1), ]
+  
+  print("--- BEST HYPERPARAMETERS FOUND ---")
+  print(best_params_row)
+  
+  # Define the final parameters using the best combination found
+  final_params <- list(
+    iterations = best_params_row$best_iteration, 
+    loss_function = 'MultiClass',
+    learning_rate = best_params_row$learning_rate,
+    depth = best_params_row$depth,
+    l2_leaf_reg = best_params_row$l2_leaf_reg,
+    bagging_temperature = best_params_row$bagging_temperature,
+    logging_level = 'Silent'
+  )
+  
+  print("--- TRAINING FINAL MODEL ON FULL TRAIN SET ---")
+  final_catboost_model <- catboost.train(learn_pool = train_pool, params = final_params)
+  
+  # Evaluate on the unseen test set
+  catboost_preds_numeric <- catboost.predict(final_catboost_model, test_pool)
+  catboost_preds_factor <- as.factor(catboost_preds_numeric + 3)
+  
+  catboost_final_f1 <- calculate_macro_f1(actual = Test$quality, predicted = catboost_preds_factor)
+  
+  print("--- FINAL CATBOOST ASSESSMENT ---")
+  print(paste("Final CatBoost F1-Score (Test Set):", round(catboost_final_f1, 5)))
+  
+  #=======================#
+  ## Visualization
+  #=======================#    
+  # Your visualization code is perfectly fine and does not need to be changed.
+  # It correctly uses the final model and final predictions.
+  # I will omit it here for brevity.
+  
+}, silent = TRUE)
+
+
 #==== 05a - Implement the CatBoost Algorithm ==================================#
 
 tryCatch({
