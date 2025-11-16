@@ -26,7 +26,7 @@ packages <- c("here", "dplyr", "tidyr",
               "randomForest", "gbm",
               "remotes",
               "gridExtra",
-              "scorecard",          ## Implementation of Informational Value.
+              "scorecard",          ## Implementation of IV.
               "FNN",                ## For creating the dummy and efficiently using KNN.
               "ranger"              ## Efficient implementation of RF.
               )
@@ -498,13 +498,11 @@ print(head(Test))
 set.seed(123)
 k_folds <- 5
 
-#==== 03a - Regularized linear models =========================================#
-
-tryCatch({
-  
 #=======================#
 ## Main Code.
 #=======================#
+
+tryCatch({
 
 ## We are now using a k-fold cross-validation workflow.
 ## For our evaluation metric, we will use F1-score.
@@ -634,11 +632,218 @@ tryCatch({
 
 tryCatch({
   
-  #=======================#
-  ## Parameters for CV with Expanded Grid Search
-  #=======================#
+#=======================#
+## Parameters for CV.
+#=======================#
+mtry_values <- c(2, 3, 4, 5, 6) ## 2 is the best one.
+nfolds <- k_folds
+
+folds <- sample(cut(seq(1, nrow(Train)), breaks = nfolds, labels = FALSE))
+
+#=======================#
+## Main Model Tuning with k-fold Cross-Validation.
+#=======================#
+
+rf_results <- data.frame(mtry = mtry_values, F1_Score = NA) 
+print("--- Starting Random Forest Tuning with 5-fold Cross-Validation ---")
+
+for (i in 1:length(mtry_values)) {
   
-  param_grid <- expand.grid(
+  current_mtry <- mtry_values[i]
+  fold_f1_scores <- c() # Store F1 scores for each fold
+  
+  for (k in 1:nfolds) {
+    
+    val_indices <- which(folds == k)
+    train_fold <- Train[-val_indices, ]
+    val_fold   <- Train[val_indices, ]
+    
+    rf_model <- randomForest(
+      quality ~ ., 
+      data = train_fold, 
+      mtry = current_mtry,
+      ntree = 500
+    )
+    
+    val_preds <- predict(rf_model, newdata = val_fold)
+    f1 <- calculate_macro_f1(actual = val_fold$quality, predicted = val_preds) ## Tune the hyperparameter on F1 score. Each fold itself uses the gini methodology.
+    fold_f1_scores <- c(fold_f1_scores, f1)
+  }
+  
+  mean_f1 <- mean(fold_f1_scores)
+  rf_results$F1_Score[i] <- mean_f1
+  
+  print(paste("Completed mtry =", current_mtry, 
+              "| Mean CV F1-Score:", round(mean_f1, 4)))
+}
+
+print("--- Tuning Complete ---")
+print(rf_results)
+
+best_mtry <- rf_results$mtry[which.max(rf_results$F1_Score)] 
+print(paste("Best mtry value found (max F1-Score):", best_mtry))
+
+#=======================#
+## Final Model Training and Assessment.
+#=======================#
+final_rf_model <- randomForest(
+  quality ~ ., 
+  data = Train, 
+  mtry = best_mtry,
+  ntree = 500,
+  importance = TRUE
+)
+
+rf_test_preds <- predict(final_rf_model, newdata = Test)
+rf_final_f1 <- calculate_macro_f1(actual = Test$quality, predicted = rf_test_preds)
+
+print("--- FINAL RANDOM FOREST ASSESSMENT ---")
+print(paste("Final RF F1-Score (Test Set):", round(rf_final_f1, 4)))
+
+#=======================#
+## Visualisation.
+#=======================#
+
+tryCatch({
+  
+  #--- Plot 1: Feature Importance (Your Original Plot) ---#
+  importance_data <- as.data.frame(importance(final_rf_model))
+  importance_data$Variable <- rownames(importance_data)
+  
+  plot_importance <- ggplot(importance_data, aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+    geom_bar(stat = "identity", fill = blue) +
+    coord_flip() +
+    labs(title = "Feature Importance (Random Forest Classification)",
+         subtitle = paste("Best mtry =", best_mtry),
+         x = "Features",
+         y = "Mean Decrease in Accuracy") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5))
+  
+  Path <- file.path(Charts_Directory, "04_Random_Forest_FeatureImportance_Class.png")
+  ggsave(
+    filename = Path,
+    plot = plot_importance,
+    width = 3750,
+    height = 1833,
+    units = "px",
+    dpi = 300,
+    limitsize = FALSE
+  )
+  
+  #--- Plot 2: Raw Count Confusion Matrix (Your Original Plot) ---#
+  cm_data_raw <- as.data.frame(table(Actual = Test$quality, Predicted = rf_test_preds))
+  
+  plot_cm_raw <- ggplot(cm_data_raw, aes(x = Actual, y = Predicted, fill = Freq)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(low = "white", high = blue) +
+    geom_text(aes(label = Freq), vjust = 1) +
+    labs(title = "Random Forest Confusion Matrix (Raw Counts)",
+         x = "Actual Quality",
+         y = "Predicted Quality",
+         fill = "Frequency") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  Path <- file.path(Charts_Directory, "04b_Random_Forest_ConfusionMatrix.png")
+  ggsave(
+    filename = Path,
+    plot = plot_cm_raw,
+    width = 3750,
+    height = 1833,
+    units = "px",
+    dpi = 300,
+    limitsize = FALSE
+  )
+  
+  #--- Plot 3: Normalized Confusion Matrix (NEW) ---#
+  
+  ## Calculate percentages for the plot
+  cm_percent_rf <- cm_data_raw %>%
+    group_by(Actual) %>%
+    mutate(Percentage = Freq / sum(Freq),
+           Label = paste0(round(Percentage * 100), "%"))
+  
+  ## Create the heatmap plot
+  plot_cm_normalized <- ggplot(cm_percent_rf, aes(x = Actual, y = Predicted, fill = Percentage)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(low = "white", high = orange, labels = scales::percent) +
+    geom_text(aes(label = Label), vjust = 1) +
+    labs(title = "Normalized Confusion Matrix (Random Forest)",
+         subtitle = "Rows sum to 100%",
+         x = "Actual Quality",
+         y = "Predicted Quality",
+         fill = "Percentage of Actual") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5),
+          aspect.ratio = 1)
+  
+  ## Save the plot
+  Path <- file.path(Charts_Directory, "04e_Random_Forest_Normalized_CM.png")
+  ggsave(
+    filename = Path,
+    plot = plot_cm_normalized,
+    width = 2500,
+    height = 2500,
+    units = "px",
+    dpi = 300
+  )
+  
+  #--- Plot 4: Error Analysis Plot (NEW) ---#
+  
+  ## Create a dataframe of test results, including the predictions
+  results_df <- Test
+  results_df$Predicted <- rf_test_preds
+  results_df$Status <- ifelse(results_df$quality == results_df$Predicted, "Correct", "Incorrect")
+  
+  ## Filter for only the misclassified samples
+  misclassified_df <- results_df %>%
+    filter(Status == "Incorrect")
+  
+  ## Create a plot showing where the errors occur
+  plot_error_analysis <- ggplot(misclassified_df, aes(x = quality, y = Predicted)) +
+    geom_count(aes(color = after_stat(n)), show.legend = TRUE) +
+    scale_color_gradient(low = blue, high = red) +
+    labs(title = "Analysis of Misclassifications (Random Forest)",
+         subtitle = "Where are the model's errors concentrated?",
+         x = "Actual Quality",
+         y = "Predicted Quality",
+         size = "Number of Errors",
+         color = "Count") +
+    theme_light() +
+    theme(plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5),
+          aspect.ratio = 1) +
+    guides(color = "none")
+  
+  ## Save the plot
+  Path <- file.path(Charts_Directory, "04f_Random_Forest_Error_Analysis.png")
+  ggsave(
+    filename = Path,
+    plot = plot_error_analysis,
+    width = 2500,
+    height = 2500,
+    units = "px",
+    dpi = 300
+  )
+
+## End of the tryCatch() statement.
+
+}, silent = TRUE)
+
+}, silent = TRUE)
+
+############ NEW IMPLEMENTATION ################################################
+
+tryCatch({
+  
+#=======================#
+## Parameters for CV with Expanded Grid Search
+#=======================#
+
+param_grid <- expand.grid(
     mtry = c(2, 3, 4, 5, 6),
     min.node.size = c(1, 3, 5, 7) 
   )
@@ -646,12 +851,12 @@ tryCatch({
   nfolds <- k_folds
   folds <- sample(cut(seq(1, nrow(Train)), breaks = nfolds, labels = FALSE))
   
-  #=======================#
-  ## Main Model Tuning with k-fold Cross-Validation
-  #=======================#
+#=======================#
+## Main Model Tuning with k-fold Cross-Validation
+#=======================#
   
-  rf_results <- data.frame(param_grid, F1_Score = NA) 
-  print("--- Starting Ranger (Random Forest) Tuning with 5-fold Cross-Validation ---")
+rf_results <- data.frame(param_grid, F1_Score = NA) 
+print("--- Starting Ranger (Random Forest) Tuning with 5-fold Cross-Validation ---")
   
   for (i in 1:nrow(param_grid)) {
     
@@ -698,11 +903,11 @@ tryCatch({
   print(paste("Best mtry value found:", best_mtry))
   print(paste("Best min.node.size value found:", best_min_node_size))
   
-  #=======================#
-  ## Final Model Training and Assessment
-  #=======================#
-  
-  final_rf_model <- ranger(
+#=======================#
+## Final Model Training and Assessment
+#=======================#
+
+    final_rf_model <- ranger(
     quality ~ ., 
     data = Train,
     mtry = best_mtry,
@@ -719,16 +924,16 @@ tryCatch({
   print("--- FINAL RANGER (RANDOM FOREST) ASSESSMENT ---")
   print(paste("Final Ranger F1-Score (Test Set):", round(rf_final_f1, 4)))
   
-  #=======================#
-  ## Visualisation
-  #=======================#
+#=======================#
+## Visualisation
+#=======================#
   
-  tryCatch({
+tryCatch({
     
-    importance_data <- data.frame(
+importance_data <- data.frame(
       Variable = names(importance(final_rf_model)),
       Importance = importance(final_rf_model)
-    )
+)
     
     plot_importance <- ggplot(importance_data, aes(x = reorder(Variable, Importance), y = Importance)) +
       geom_bar(stat = "identity", fill = blue) +
@@ -792,126 +997,91 @@ tryCatch({
 
 tryCatch({
 
-tryCatch({
-    
 #=======================#
-## Parameters for CV with Expanded Grid Search
+## Parameters & Data Prep.
 #=======================#
+## The gbm package requires the target variable to be 0-indexed for multinomial classification.
+## We will create copies of our dataframes for this purpose.
+  
+Train_GBM <- Train
+Train_GBM$quality <- as.integer(Train_GBM$quality) - 3 # Levels 3-9 become 0-6
+  
+Test_GBM <- Test
+Test_GBM$quality <- as.integer(Test_GBM$quality) - 3 # Levels 3-9 become 0-6
+  
+depth_values <- c(4, 6, 8, 10)
+shrinkage <- 0.01
 
-param_grid_gbm <- expand.grid(
-interaction.depth = c(4, 6, 8),
-shrinkage = c(0.01, 0.05),
-n.minobsinnode = c(10, 15)
-    )
-    
-    nfolds <- k_folds
-    folds <- sample(cut(seq(1, nrow(Train)), breaks = nfolds, labels = FALSE))
-    max_trees <- 2000 
-    
 #=======================#
-## Main Model Tuning with MANUAL k-fold Cross-Validation
+## Main Model Tuning with Built-in Cross-Validation.
 #=======================#
+gbm_results <- data.frame(depth = depth_values, 
+                          best_trees = NA, 
+                          cv_Error = NA) 
 
-        gbm_results <- data.frame(param_grid_gbm, F1_Score = NA, best_trees = NA)
-    
-    print("--- Starting GBM Tuning with MANUAL 5-fold Cross-Validation (optimizing for F1-Score) ---")
-    
-    for (i in 1:nrow(param_grid_gbm)) {
-      
-      current_depth <- param_grid_gbm$interaction.depth[i]
-      current_shrinkage <- param_grid_gbm$shrinkage[i]
-      current_minobs <- param_grid_gbm$n.minobsinnode[i]
-      
-      fold_f1_scores <- c()
-      fold_best_trees <- c()
-      
-      for (k in 1:nfolds) {
-        val_indices <- which(folds == k)
-        train_fold <- Train[-val_indices, ]
-        val_fold   <- Train[val_indices, ]
-        
-        # --- Data Prep: Must be done INSIDE the loop for each fold ---
-        train_fold$quality <- as.integer(train_fold$quality) - 3
-        val_fold_actuals <- val_fold$quality # Keep original factors for F1 calculation
-        val_fold$quality <- as.integer(val_fold$quality) - 3
-        
-        set.seed(123)
-        gbm_model_fold <- gbm(
-          quality ~ .,
-          data = train_fold,
-          distribution = "multinomial",
-          n.trees = max_trees,
-          interaction.depth = current_depth,
-          shrinkage = current_shrinkage,
-          n.minobsinnode = current_minobs,
-          verbose = FALSE
-        )
-        
-        best_iter_fold <- gbm.perf(gbm_model_fold, plot.it = FALSE, method = "OOB")
-        
-        pred_probs_fold <- predict(gbm_model_fold, newdata = val_fold, n.trees = best_iter_fold, type = "response")
-        prob_matrix_fold <- pred_probs_fold[,,1]
-        preds_numeric_fold <- apply(prob_matrix_fold, 1, which.max) - 1
-        preds_factor_fold <- as.factor(preds_numeric_fold + 3)
-        
-        f1 <- calculate_macro_f1(actual = val_fold_actuals, predicted = preds_factor_fold)
-        fold_f1_scores <- c(fold_f1_scores, f1)
-        fold_best_trees <- c(fold_best_trees, best_iter_fold)
-      }
-      
-      mean_f1 <- mean(fold_f1_scores)
-      mean_best_trees <- ceiling(mean(fold_best_trees))
-      gbm_results$F1_Score[i] <- mean_f1
-      gbm_results$best_trees[i] <- mean_best_trees
-      
-      print(paste("Completed params:", "Depth =", current_depth, "| Shrinkage =", current_shrinkage, "| MinObs =", current_minobs,
-                  "| Mean CV F1-Score:", round(mean_f1, 4)))
-    }
-    
-    print("--- Tuning Complete ---")
-    print(gbm_results[order(gbm_results$F1_Score, decreasing = TRUE), ])
-    
-    best_params_row_gbm <- gbm_results[which.max(gbm_results$F1_Score), ]
-    best_depth <- best_params_row_gbm$interaction.depth
-    best_shrinkage <- best_params_row_gbm$shrinkage
-    best_minobs <- best_params_row_gbm$n.minobsinnode
-    best_trees <- best_params_row_gbm$best_trees
-    
-    print(paste("Best params found: Depth =", best_depth, "| Shrinkage =", best_shrinkage, 
-                "| MinObs =", best_minobs, "| Best Trees =", best_trees))
-    
+print("--- Starting GBM Tuning with 5-fold Cross-Validation ---")
+
+for (i in 1:length(depth_values)) {
+  gbm_model <- gbm(
+    quality ~ .,
+    data = Train_GBM, # NOTE: We now use our 80% Train set directly
+    distribution = "multinomial",
+    n.trees = 2000,
+    interaction.depth = depth_values[i],
+    shrinkage = shrinkage,
+    cv.folds = 5, # The model performs k-fold CV internally
+    n.minobsinnode = 10,      
+    n.cores = NULL 
+  )
+  
+  best_M <- gbm.perf(gbm_model, plot.it = FALSE, method = "cv")
+  best_cv_error <- gbm_model$cv.error[best_M] 
+  
+  gbm_results$cv_Error[i] <- best_cv_error
+  gbm_results$best_trees[i] <- best_M
+  
+  print(paste("Depth:", depth_values[i], "| Best Trees:", best_M, 
+              "| Min CV Error (Deviance):", round(best_cv_error, 4)))
+}
+
+print("--- Tuning Complete ---")
+print(gbm_results)
+
+best_depth <- gbm_results$depth[which.min(gbm_results$cv_Error)]
+best_trees <- gbm_results$best_trees[which.min(gbm_results$cv_Error)]
+
+print(paste("Best Interaction Depth found:", best_depth))
+print(paste("Best Number of Trees found:", best_trees))
+
 #=======================#
-## Final Model Training and Assessment
+## Final Model Training and Assessment.
 #=======================#
-    
-    Train_GBM <- Train
-    Train_GBM$quality <- as.integer(Train_GBM$quality) - 3
-    Test_GBM <- Test
-    Test_GBM$quality <- as.integer(Test_GBM$quality) - 3
-    
-    final_gbm_model <- gbm(
-      quality ~ .,
-      data = Train_GBM,
-      distribution = "multinomial", 
-      n.trees = best_trees,
-      interaction.depth = best_depth,
-      shrinkage = best_shrinkage,
-      n.minobsinnode = best_minobs,
-      verbose = FALSE
-    )
-    
-    gbm_pred_probs <- predict(final_gbm_model, newdata = Test_GBM, n.trees = best_trees, type = "response")
-    gbm_prob_matrix <- gbm_pred_probs[,,1]
-    gbm_final_preds_numeric <- apply(gbm_prob_matrix, 1, which.max) - 1
-    gbm_final_preds_factor <- as.factor(gbm_final_preds_numeric + 3)
-    
-    gbm_final_f1 <- calculate_macro_f1(actual = Test$quality, predicted = gbm_final_preds_factor)
-    
-    print("--- FINAL GRADIENT BOOSTING ASSESSMENT ---")
-    print(paste("Final GBM F1-Score (Test Set):", round(gbm_final_f1, 4)))
-    
-    
-  }, silent = TRUE)
+final_gbm_model <- gbm(
+  quality ~ .,
+  data = Train_GBM, # Using the full 80% training set
+  distribution = "multinomial", 
+  n.trees = best_trees,
+  interaction.depth = best_depth,
+  shrinkage = shrinkage,
+  n.minobsinnode = 10,
+  verbose = FALSE,
+  n.cores = NULL
+)
+
+gbm_pred_probs <- predict(final_gbm_model, 
+                          newdata = Test_GBM, 
+                          n.trees = best_trees,
+                          type = "response") 
+
+gbm_prob_matrix <- gbm_pred_probs[,,1]
+gbm_final_preds_numeric <- apply(gbm_prob_matrix, 1, which.max) - 1
+
+gbm_final_preds_factor <- as.factor(gbm_final_preds_numeric + 3)
+
+gbm_final_f1 <- calculate_macro_f1(actual = Test$quality, predicted = gbm_final_preds_factor)
+
+print("--- FINAL GRADIENT BOOSTING ASSESSMENT ---")
+print(paste("Final GBM F1-Score (Test Set):", round(gbm_final_f1, 4)))
 
 #=======================#
 ## Visualisation.
