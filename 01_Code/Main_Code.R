@@ -1141,6 +1141,8 @@ ggsave(
 #==== 05 - Appendix ===========================================================#
 #==============================================================================#
 
+load("C:/Users/TristanLeiter/Documents/Privat/SML/04_Presentation/SML_Project/02_Data/R_Data_SML_with_CatBoost.RData")
+
 #==== 05a - Implement the CatBoost Algorithm ==================================#
 
 tryCatch({
@@ -1249,8 +1251,12 @@ tuning_results$best_iteration <- NA
     final_catboost_model <- catboost.train(learn_pool = final_train_pool, params = final_params)
     
 ## Evaluate the final model on the unseen Test set
-    catboost_preds_numeric <- catboost.predict(final_catboost_model, test_pool)
-    catboost_preds_factor <- as.factor(catboost_preds_numeric + 3)
+    test_pool <- catboost.load_pool(data = test_x, label = test_y)
+    preds_matrix <- catboost.predict(final_catboost_model, test_pool)
+    
+    pred_class_indices <- max.col(preds_matrix)
+    
+    catboost_preds_factor <- as.factor(pred_class_indices + 2)
     
     catboost_final_f1 <- calculate_macro_f1(actual = Test$quality, predicted = catboost_preds_factor)
     
@@ -1317,6 +1323,189 @@ tuning_results$best_iteration <- NA
     
   }, silent = TRUE)
   
+#=======================#
+## 1. Update Results DataFrame
+#=======================#
+
+results_df <- data.frame(
+  Model = c("Lasso", "Ridge", "Random Forest", "Gradient Boosting", "CatBoost"),
+  F1_Score = c(lasso_test_f1, 
+               ridge_test_f1, 
+               rf_final_f1, 
+               gbm_final_f1,
+               catboost_final_f1)
+)
+
+print("--- Final Model Performance ---")
+results_df <- results_df[order(results_df$F1_Score, decreasing = TRUE), ]
+print(results_df)
+
+custom_colors <- c(
+  "Ridge"             = "#C77CFF", # Purple
+  "Lasso"             = "#7CAE00", # Green
+  "Gradient Boosting" = "#F8766D", # Salmon/Red
+  "Random Forest"     = "#00BFC4", # Teal/Cyan
+  "CatBoost"          = blue    # <--- Your requested Blue
+)
+
+#=======================#
+## 2. Generate Plot
+#=======================#
+
+plot_f1_comparison <- ggplot(results_df, aes(x = reorder(Model, F1_Score), y = F1_Score)) +
+  geom_bar(stat = "identity", aes(fill = Model), width = 0.7) +
+  scale_fill_manual(values = custom_colors) +
+  geom_text(aes(label = round(F1_Score, 3)), vjust = -0.5, size = 4) +
+  labs(title = "Final Model Comparison: F1-Score on Test Set",
+       x = "Model",
+       y = "Macro F1-Score") +
+  ylim(0, 1.1) + 
+  theme_light() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+#=======================#
+## 3. Save Plot
+#=======================#
+
+Path <- file.path(Charts_Directory, "05b_F1_Score_Comparison_incl_Catboost.png")
+
+ggsave(
+  filename = Path,
+  plot = plot_f1_comparison,
+  width = 2500,
+  height = 1800,
+  units = "px",
+  dpi = 300,
+  limitsize = FALSE
+)
+
+print(plot_f1_comparison)
+
+#==============================================================================#
+
+library(catboost)
+library(caret)
+library(dplyr)
+
+#=======================#
+## 1. Setup (Classification)
+#=======================#
+# NOTE: We convert y to 0-indexed labels here (3->0, 4->1, etc.)
+train_x <- Train[, -which(names(Train) == "quality")]
+train_y <- as.numeric(Train$quality) - 3
+train_pool <- catboost.load_pool(data = train_x, label = train_y)
+
+test_x <- Test[, -which(names(Test) == "quality")]
+test_y <- as.numeric(Test$quality) - 3
+test_pool <- catboost.load_pool(data = test_x, label = test_y)
+
+#=======================#
+## 2. Efficient Grid Search (Classification)
+#=======================#
+
+# To fix the "Confused 3 vs 9" issue, we tune Regularization heavily:
+param_grid <- expand.grid(
+  learning_rate = c(0.05, 0.1),
+  depth = c(6, 8), 
+  # Higher L2 makes the model smoother/less sensitive to outliers
+  l2_leaf_reg = c(5, 10), 
+  # random_strength > 0 helps the model ignore noisy/inconsistent patterns during split selection
+  random_strength = c(1, 5) 
+)
+
+best_f1 <- 0
+best_params <- list()
+best_iteration <- 0
+
+print("--- STARTING EFFICIENT CLASSIFICATION CV ---")
+
+for(i in 1:nrow(param_grid)) {
+  
+  params <- list(
+    loss_function = 'MultiClass',
+    eval_metric = 'TotalF1', # Optimize F1 directly inside the CV
+    iterations = 1000,
+    early_stopping_rounds = 50,
+    learning_rate = param_grid$learning_rate[i],
+    depth = param_grid$depth[i],
+    l2_leaf_reg = param_grid$l2_leaf_reg[i],
+    random_strength = param_grid$random_strength[i], # Crucial for synthetic noise
+    border_count = 128, # Reduced from 254 to make splits coarser (less overfitting)
+    logging_level = 'Silent'
+  )
+  
+  # Run internal C++ Cross-Validation (Much faster)
+  cv_results <- catboost.cv(
+    pool = train_pool,
+    params = params,
+    fold_count = 5,
+    partition_random_seed = 123,
+    stratified = TRUE # Important for Classification
+  )
+  
+  # Find the best iteration for this setting
+  # The column name usually follows the pattern: "test-TotalF1-mean"
+  # We use 'max' because F1 is better when higher
+  idx_best <- which.max(cv_results$test.TotalF1.mean)
+  current_f1 <- cv_results$test.TotalF1.mean[idx_best]
+  
+  print(paste("Run", i, 
+              "| Depth:", params$depth, 
+              "| L2:", params$l2_leaf_reg, 
+              "| RndStr:", params$random_strength,
+              "| CV F1:", round(current_f1, 4)))
+  
+  if(current_f1 > best_f1) {
+    best_f1 <- current_f1
+    best_params <- params
+    best_iteration <- idx_best # Save exact iteration where it peaked
+  }
+}
+
+print("--- TUNING COMPLETE ---")
+print(paste("Best CV F1:", best_f1))
+
+#=======================#
+## 3. Final Model & Prediction
+#=======================#
+
+# Update iterations to the optimal number found
+best_params$iterations <- best_iteration
+
+print("--- TRAINING FINAL MODEL ---")
+final_catboost_model <- catboost.train(learn_pool = train_pool, params = best_params)
+
+# RE-LOAD TEST POOL to be safe
+test_pool <- catboost.load_pool(data = test_x, label = test_y)
+
+# Predict Class Labels directly
+catboost_preds_numeric <- catboost.predict(final_catboost_model, test_pool, prediction_type = 'Class')
+
+# Convert back to Factors (0 -> 3, 1 -> 4, etc.)
+catboost_preds_factor <- as.factor(catboost_preds_numeric + 3)
+actual_factor <- as.factor(Test$quality)
+
+# Ensure levels match
+all_levels <- union(levels(actual_factor), levels(catboost_preds_factor))
+catboost_preds_factor <- factor(catboost_preds_factor, levels = all_levels)
+actual_factor <- factor(actual_factor, levels = all_levels)
+
+#=======================#
+## 4. Evaluation
+#=======================#
+
+catboost_final_f1 <- calculate_macro_f1(actual = actual_factor, predicted = catboost_preds_factor)
+
+print("--- FINAL CATBOOST ASSESSMENT (CLASSIFICATION) ---")
+print(paste("Final CatBoost F1-Score:", round(catboost_final_f1, 5)))
+
+# Check Confusion Matrix
+table(Actual = actual_factor, Predicted = catboost_preds_factor)
+
+
+
 
 #==============================================================================#
 #==============================================================================#
